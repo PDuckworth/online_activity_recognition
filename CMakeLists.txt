@@ -7,7 +7,14 @@ project(online_activity_recognition)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
+  geometry_msgs
   tf
+  message_generation
+  actionlib
+  actionlib_msgs
+  roslib
+  cv_bridge
+  image_transport
 )
 
 ## System dependencies are found with CMake's conventions
@@ -44,11 +51,14 @@ find_package(catkin REQUIRED COMPONENTS
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
+ add_message_files(
+   FILES
+   joint_message.msg
+   skeleton_message.msg
+   skeleton_tracker_state.msg
 #   Message1.msg
 #   Message2.msg
-# )
+ )
 
 ## Generate services in the 'srv' folder
 # add_service_files(
@@ -58,17 +68,23 @@ find_package(catkin REQUIRED COMPONENTS
 # )
 
 ## Generate actions in the 'action' folder
-# add_action_files(
-#   FILES
+ add_action_files(
+   DIRECTORY action
+   FILES recognise.action
 #   Action1.action
 #   Action2.action
-# )
+ )
 
 ## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   std_msgs
-# )
+generate_messages(
+   DEPENDENCIES std_msgs actionlib_msgs geometry_msgs
+)
+
+catkin_package(
+  LIBRARIES online_activity_recognition
+  CATKIN_DEPENDS actionlib_msgs
+  DEPENDS system_lib massage_runtime
+)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
