@@ -75,7 +75,7 @@ class SkeletonManager(object):
                         if tp != self.data[subj][i]['t_old']:
                             self.data[subj][i]['t_old'] = tp
                             self.data[subj]['flag'] = 1
-                            print 'yay',i,subj
+                            # print 'yay',i,subj
                             (self.data[subj][i]['value'], self.data[subj][i]['rot']) = \
                                 self.tf_listener.lookupTransform(self.baseFrame, self.baseFrame+"/user_%d/%s" % (subj, i), rospy.Time(0))
 

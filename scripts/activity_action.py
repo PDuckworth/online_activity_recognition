@@ -15,9 +15,21 @@ from online_activity_recognition.msg import recogniseAction, recogniseActionResu
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 from tf.transformations import euler_from_quaternion
 import math
+import numpy as np
+from qsrlib_io.world_trace import Object_State, World_Trace
+
+from qsrlib.qsrlib import QSRlib, QSRlib_Request_Message
+from qsrlib_io.world_qsr_trace import World_QSR_Trace
+from qsrlib_utils.utils import merge_world_qsr_traces
+from qsrlib_qstag.qstag import Activity_Graph
+from qsrlib_qstag.utils import *
 
 class activity_server(object):
     def __init__(self):
+        # subscribe to robot pose to get location
+        rospy.Subscriber("/robot_pose", Pose, callback=self.robot_callback, queue_size=10)
+        # get some objects
+        self.objects = self.get_soma_objects()
         # Start server
         rospy.loginfo("Activity Recognition starting an action server")
         self.skeleton_msg = None
@@ -32,14 +44,9 @@ class activity_server(object):
             print "config loaded.."
         except:
             print "no config file found"
-
         # PTU state - based upon current_node callback
         self.ptu_action_client = actionlib.SimpleActionClient('/SetPTUState', PtuGotoAction)
         self.ptu_action_client.wait_for_server()
-
-
-        rospy.Subscriber("/robot_pose", Pose, callback=self.robot_callback, queue_size=10)
-
         #request_sent
         self.request_sent_flag = 0
 
@@ -50,6 +57,7 @@ class activity_server(object):
         end = rospy.Time.now()
         self.sk_publisher._initialise_data()
         self.sk_publisher.robot_pose_flag = 1
+        self.waypoint = goal.waypoint
 
         # print goal
         self.set_ptu_state(goal.waypoint)
@@ -62,25 +70,139 @@ class activity_server(object):
                 break
 
             self.sk_publisher.get_skeleton()
-            print self.sk_publisher.accumulate_data.keys()
-            # print self.pan,self.tilt
-            print self.rot,self.pos_robot
-            # print self.robot_pose.orientation
+            self.convert_to_map()
+            self.get_world_frame_trace(self.objects[self.waypoint])
+            # print self.map_world
             print '------------'
-
             rospy.sleep(0.01)  # wait until something is published
 
             end = rospy.Time.now()
-
         # after the action reset everything
         self.reset_all()
 
         self._as.set_succeeded(recogniseActionResult())
 
 
+    def get_object_frame_qsrs(self, world_trace, objects):
+
+
+        joint_types = {'left_hand': 'hand', 'right_hand': 'hand',  'head-torso': 'tpcc-plane'}
+
+        joint_types_plus_objects = joint_types.copy()
+        for object in objects:
+            generic_object = "_".join(object.split("_")[:-1])
+            joint_types_plus_objects[object] = generic_object
+
+        print joint_types_plus_objects
+
+        """create QSRs between the person's joints and the soma objects in map frame"""
+        qsrs_for=[]
+        for ob in objects:
+            qsrs_for.append((str(ob), 'left_hand'))
+            qsrs_for.append((str(ob), 'right_hand'))
+            #qsrs_for.append((str(ob), 'torso'))
+
+        dynamic_args = {}
+        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.5, 'Near': 0.75,  'Medium': 1.5, 'Ignore': 10}}
+        # dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.2, 'Ignore': 10}}
+        dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.05, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
+        dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 2}}
+
+        qsrlib = QSRlib()
+
+        #req = QSRlib_Request_Message(which_qsr=["argd", "qtcbs"], input_data=world_trace, dynamic_args=dynamic_args)
+        req = QSRlib_Request_Message(which_qsr="argd", input_data=world_trace, dynamic_args=dynamic_args)
+        ret = qsrlib.request_qsrs(req_msg=req)
+
+        for ep in ret.qstag.episodes:
+            print ep
+
+        for cnt, h in  zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
+            print "\n", cnt, h, ret.qstag.graphlets.graphlets[h]
+
+        sys.exit(1)
+        return ret
+
+
+    def get_world_frame_trace(self, world_objects):
+        """Accepts a dictionary of world (soma) objects.
+        Adds the position of the object at each timepoint into the World Trace"""
+        self.map_world = {}
+        for subj in self.skeleton_map:
+            ob_states={}
+            world = World_Trace()
+            map_frame_data = self.skeleton_map[subj]
+            for joint_id in map_frame_data.keys():
+                #Joints:
+                for t in xrange(self.frames):
+                    x = map_frame_data[joint_id][t][0]
+                    y = map_frame_data[joint_id][t][1]
+                    z = map_frame_data[joint_id][t][2]
+                    if joint_id not in ob_states.keys():
+                        ob_states[joint_id] = [Object_State(name=joint_id, timestamp=t, x=x, y=y, z=z)]
+                    else:
+                        ob_states[joint_id].append(Object_State(name=joint_id, timestamp=t, x=x, y=y, z=z))
+
+                # SOMA objects
+            for t in xrange(self.frames):
+                for object, (x,y,z) in world_objects.items():
+                    if object not in ob_states.keys():
+                        ob_states[object] = [Object_State(name=str(object), timestamp=t, x=x, y=y, z=z)]
+                    else:
+                        ob_states[object].append(Object_State(name=str(object), timestamp=t, x=x, y=y, z=z))
+
+                # # Robot's position
+                # (x,y,z) = self.robot_data[t][0]
+                # if 'robot' not in ob_states.keys():
+                #     ob_states['robot'] = [Object_State(name='robot', timestamp=t, x=x, y=y, z=z)]
+                # else:
+                #     ob_states['robot'].append(Object_State(name='robot', timestamp=t, x=x, y=y, z=z))
+
+            for obj, object_state in ob_states.items():
+                world.add_object_state_series(object_state)
+
+            self.map_world[subj] = world
+            self.get_object_frame_qsrs(world, self.objects[self.waypoint])
+
+
+    def convert_to_map(self):
+        self.skeleton_map = {}
+        frames = 10      # frames to be processed
+        self.frames = frames
+        for subj in self.sk_publisher.accumulate_data.keys():
+            all_data = len(self.sk_publisher.accumulate_data[subj])
+            if all_data<frames*2:
+                continue
+            self.skeleton_map[subj] = {}
+            self.skeleton_map[subj]['right_hand'] = []
+            self.skeleton_map[subj]['left_hand'] = []
+            for f in range(np.max([0,all_data-frames*2]),all_data,2):
+                print '*',f
+                # do it for right hand
+                right_hand = self.sk_publisher.accumulate_data[subj][f].joints[11]
+                map_joint = self._convert_one_joint_to_map(right_hand)
+                self.skeleton_map[subj]['right_hand'].append(map_joint)
+
+                # do it for left hand
+                left_hand = self.sk_publisher.accumulate_data[subj][f].joints[5]
+                map_joint = self._convert_one_joint_to_map(left_hand)
+                self.skeleton_map[subj]['left_hand'].append(map_joint)
+
+
+    def _convert_one_joint_to_map(self,joint):
+        y = joint.pose.position.x
+        z = joint.pose.position.y
+        x = joint.pose.position.z
+        pos_p = np.matrix([[x], [-y], [z]]) # person's position in camera frame
+        map_pos = self.rot*pos_p+self.pos_robot # person's position in map frame
+        x_mf = map_pos[0,0]
+        y_mf = map_pos[1,0]
+        z_mf = map_pos[2,0]
+        return [x_mf,y_mf,z_mf]
+
+
     def get_rotation_matrix(self, waypoint):
         # print waypoint
-
         try:
             pan = self.config[waypoint]['pan']
             tilt = self.config[waypoint]['tilt']
@@ -95,6 +217,7 @@ class activity_server(object):
         ay = self.robot_pose.orientation.y
         az = self.robot_pose.orientation.z
         aw = self.robot_pose.orientation.w
+
         roll, pitch, yaw = euler_from_quaternion([ax, ay, az, aw])    #odom
         yaw   += pan*math.pi / 180.                   # this adds the pan of the ptu state when recording took place.
         pitch += tilt*math.pi / 180.                # this adds the tilt of the ptu state when recording took place.
@@ -102,6 +225,7 @@ class activity_server(object):
         rot_z = np.matrix([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
         self.rot = rot_z*rot_y
         self.pos_robot = np.matrix([[xr], [yr], [zr+1.66]]) # robot's position in map frame
+
 
     def robot_callback(self, msg):
         self.robot_pose = msg
@@ -134,6 +258,37 @@ class activity_server(object):
             self.ptu_action_client.wait_for_result()
         except KeyError:
             self.reset_ptu()
+
+
+    def get_soma_objects(region=None):
+        #todo: read from soma2 mongo store.
+
+        objects = {}
+        objects['Kitchen'] = {}
+        objects['Long_room'] = {}
+        objects['Robot_lab'] = {}
+        objects['Staff_Room'] = {}
+        objects['test'] = {}
+
+
+        objects['test'] = {'laptop_1':(-8.18, -36.13, 1.30)}
+        # kitchen objects
+        objects['Kitchen'] = {
+        'Printer_console_11': (-8.957, -17.511, 1.1),                           # fixed
+        # 'Printer_paper_tray_110': (-9.420, -18.413, 1.132),                     # fixed
+        # 'Shelves_44': (-8.226, -15.223, 1.0),
+        'Microwave_3': (-4.835, -15.812, 1.0),                                  # fixed
+        'Kettle_32': (-2.511, -15.724, 1.41),                                   # fixed
+        'Tea_Pot_47': (-3.855, -15.957, 1.0),                                   # fixed
+        # 'Water_Cooler_33': (-4.703, -15.558, 1.132),                            # fixed
+        # 'Waste_Bin_24': (-1.982, -16.681, 0.91),                                # fixed
+        # 'Waste_Bin_27': (-1.7636072635650635, -17.074087142944336, 0.5),
+        # 'Sink_28': (-2.754, -15.645, 1.046),                                    # fixed
+        # 'Fridge_7': (-2.425, -16.304, 0.885),                                   # fixed
+        # 'Paper_towel_111': (-1.845, -16.346, 1.213),                            # fixed
+        'Double_doors_112': (-8.365, -18.440, 1.021)
+        }
+        return objects
 
 
 if __name__ == "__main__":
