@@ -8,7 +8,7 @@ import sys
 from std_msgs.msg import String
 from geometry_msgs.msg import Pose, Point, Quaternion
 from strands_navigation_msgs.msg import TopologicalMap
-from online_activity_recognition.msg import skeleton_tracker_state, skeleton_message
+from online_activity_recognition.msg import skeleton_tracker_state, skeleton_message, joint_message
 from mongodb_store.message_store import MessageStoreProxy
 
 class SkeletonManager(object):
@@ -42,13 +42,27 @@ class SkeletonManager(object):
 
         # only publish the skeleton data when the person is far enough away (distance threshold)
         self.frame_thresh = 5000
-        self.dist_thresh = 2.0
+        self.dist_thresh = .5
         self.dist_flag = 1
 
         # initialise mongodb client
         # if self._with_logging:
         #     rospy.loginfo("Connecting to mongodb...%s" % self._message_store)
         #     self._store_client = MessageStoreProxy(collection=self._message_store)
+
+    def _initialise_data(self):
+        #to cope with upto 10 people in the scene
+        for subj in xrange(1,11):
+            self.data[subj] = {}
+            self.data[subj]['flag'] = 0
+            self.users[subj] = {"message": "New", "frame": 1, "uuid": "initial_empty"}
+            self.accumulate_data = {}
+
+            for i in self.joints:
+                self.data[subj][i] = dict()
+                #self.data[subj][i]['value'] = [0,0,0]
+                #self.data[subj][i]['value'] = [0,0,0]
+                self.data[subj][i]['t_old'] = 0
 
     def _get_tf_data(self):
         for subj in xrange(1,11):
@@ -61,6 +75,7 @@ class SkeletonManager(object):
                         if tp != self.data[subj][i]['t_old']:
                             self.data[subj][i]['t_old'] = tp
                             self.data[subj]['flag'] = 1
+                            print 'yay',i,subj
                             (self.data[subj][i]['value'], self.data[subj][i]['rot']) = \
                                 self.tf_listener.lookupTransform(self.baseFrame, self.baseFrame+"/user_%d/%s" % (subj, i), rospy.Time(0))
 
@@ -68,7 +83,6 @@ class SkeletonManager(object):
                         joints_found = False
                         self.data[subj]['flag'] = 0  #don't publish part of this Users skeleton
                         continue
-
             # stop tracking this user after this much frames
             if "frame" in self.users[subj]:
                 if self.users[subj]["frame"] >= self.frame_thresh:
@@ -109,7 +123,6 @@ class SkeletonManager(object):
                 joint.pose.orientation = rot
                 incr_msg.joints.append(joint)
             self.data[subj]['flag'] = 0
-
             if self.dist_flag:
                 #update a frame
                 self.users[subj]["frame"] += 1
