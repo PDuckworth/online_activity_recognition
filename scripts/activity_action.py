@@ -23,6 +23,11 @@ from qsrlib_io.world_qsr_trace import World_QSR_Trace
 from qsrlib_utils.utils import merge_world_qsr_traces
 from qsrlib_qstag.qstag import Activity_Graph
 from qsrlib_qstag.utils import *
+import copy
+import cv2
+
+import cPickle as pickle
+import time
 
 class activity_server(object):
     def __init__(self):
@@ -35,7 +40,6 @@ class activity_server(object):
         self.skeleton_msg = None
         self._as = actionlib.SimpleActionServer("recognise_action", recogniseAction, \
                                                     execute_cb=self.execute_cb, auto_start=False)
-        self._as.start()
         self.sk_publisher = SkeletonManager()
         self.skeleton_msg = skeleton_message()  #default empty
         self.filepath = os.path.join(roslib.packages.get_pkg_dir("online_activity_recognition"), "config")
@@ -47,8 +51,18 @@ class activity_server(object):
         # PTU state - based upon current_node callback
         self.ptu_action_client = actionlib.SimpleActionClient('/SetPTUState', PtuGotoAction)
         self.ptu_action_client.wait_for_server()
-        #request_sent
-        self.request_sent_flag = 0
+        # load files
+        datafilepath = os.path.join(roslib.packages.get_pkg_dir("online_activity_recognition"), "data")
+        self.load_all_files(datafilepath)
+        # online window of QSTAGS
+        self.windows_size = 50
+        self.th = 4         # column thickness
+        self.th2 = 4        # frame thickness
+        self.online_window = {}
+        self.online_window_img = {}
+        self.act_results = {}
+        # Start server
+        self._as.start()
 
 
     def execute_cb(self, goal):
@@ -58,11 +72,8 @@ class activity_server(object):
         self.sk_publisher._initialise_data()
         self.sk_publisher.robot_pose_flag = 1
         self.waypoint = goal.waypoint
-
-        # print goal
         self.set_ptu_state(goal.waypoint)
         self.get_rotation_matrix(goal.waypoint)
-
         prev_uuid = ""
 
         while (end - start).secs < duration.secs:
@@ -72,28 +83,109 @@ class activity_server(object):
             self.sk_publisher.get_skeleton()
             self.convert_to_map()
             self.get_world_frame_trace(self.objects[self.waypoint])
-            # print self.map_world
+            self.update_online_window()
+            self.recognise_activities()
+            self.plot_online_window()
             print '------------'
             rospy.sleep(0.01)  # wait until something is published
 
             end = rospy.Time.now()
         # after the action reset everything
         self.reset_all()
-
         self._as.set_succeeded(recogniseActionResult())
 
 
+    def plot_online_window(self):
+        for subj in self.online_window_img:
+            img = self.online_window_img[subj]
+            cv2.imshow('QSTAGS',img)
+            # cv2.waitKey(1)
+
+        for subj in self.act_results:
+            img = np.zeros((100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+            for f in range(self.windows_size):
+                for act in self.act_results[subj]:
+                    print act,self.act_results[subj][act]
+                    img[int(100-self.act_results[subj][act][f]):100,f*self.th2:(f+1)*self.th2,:] = act*10
+            cv2.imshow('actions',img)
+        cv2.waitKey(1)
+
+        # for subj in self.online_window:
+
+
+    def recognise_activities(self):
+        self.act_results = {}
+        for subj in self.online_window:
+            # compressing the different windows to be processed
+            for w in range(4,10,2):
+                for i in range(self.windows_size-w):
+                    compressed_window = copy.deepcopy(self.online_window[subj][i,:])
+                    for j in range(1,w+1):
+                        compressed_window += self.online_window[subj][j+i,:]
+                    compressed_window /= compressed_window
+                    # comparing the processed windows with the different actions
+                    if subj not in self.act_results:
+                        self.act_results[subj] = {}
+                    for act in self.actions_vectors:
+                        if act not in self.act_results[subj]:
+                            self.act_results[subj][act] = np.zeros((self.windows_size), dtype=np.float32)
+
+                        result = compressed_window*self.actions_vectors[act]
+                        if np.sum(result) != 0:
+                            for j in range(0,w+1):
+                                if self.act_results[subj][act][i+j] < np.sum(result):
+                                    self.act_results[subj][act][i+j] = np.sum(result)
+
+
+    def update_online_window(self):
+        for subj in self.subj_world_trace:
+            # initiate the window of QSTAGS for this person
+            if subj not in self.online_window:
+                self.online_window[subj] = np.zeros((self.windows_size, len(self.code_book)), dtype=np.uint8)
+                self.online_window_img[subj] = np.zeros((len(self.code_book)*self.th,self.windows_size*self.th2,3),dtype=np.uint8)+255
+            # shift one frame
+            else:
+                self.online_window[subj][1:self.windows_size] = self.online_window[subj][0:self.windows_size-1]
+                self.online_window_img[subj][:,self.th2:self.windows_size*self.th2,:] = self.online_window_img[subj][:,0:self.windows_size*self.th2-self.th2,:]
+            # find which QSTAGS happened in this frame
+            ret = self.subj_world_trace[subj]
+            self.online_window[subj][0,:] = 0
+            self.online_window_img[subj][:, 0:self.th2, :] = 255
+            for cnt, h in  zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
+                if h in self.code_book:
+                    index = list(self.code_book).index(h)
+                    self.online_window[subj][0,index] = 1
+                    self.online_window_img[subj][index*self.th:index*self.th+self.th, 0:self.th2, :] = 10
+
+
+
+
+    def load_all_files(self, path):
+        print "loading files..."
+        date = time.strftime("%d_%m_%Y")
+        date = '15_06_2016'  ## test features :)
+
+        with open(path + "/code_book_" + date + ".p", 'r') as f:
+            self.code_book = pickle.load(f)
+
+        with open(path + "/graphlets_" + date + ".p", 'r') as f:
+            self.graphlets = pickle.load(f)
+
+        self.actions_vectors = {}
+        with open(path + "/v_singular_mat_" + date + ".p", 'r') as f:
+            VT = pickle.load(f)
+        for count,act in enumerate(VT):
+            p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
+            self.actions_vectors[count] = act/p_sum*100
+
+
     def get_object_frame_qsrs(self, world_trace, objects):
-
-
         joint_types = {'left_hand': 'hand', 'right_hand': 'hand',  'head-torso': 'tpcc-plane'}
 
         joint_types_plus_objects = joint_types.copy()
         for object in objects:
             generic_object = "_".join(object.split("_")[:-1])
             joint_types_plus_objects[object] = generic_object
-
-        print joint_types_plus_objects
 
         """create QSRs between the person's joints and the soma objects in map frame"""
         qsrs_for=[]
@@ -103,31 +195,24 @@ class activity_server(object):
             #qsrs_for.append((str(ob), 'torso'))
 
         dynamic_args = {}
-        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.5, 'Near': 0.75,  'Medium': 1.5, 'Ignore': 10}}
-        # dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.2, 'Ignore': 10}}
+        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.25, 'Near': 0.5,  'Ignore': 10}}
         dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.05, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 2}}
-
         qsrlib = QSRlib()
-
         #req = QSRlib_Request_Message(which_qsr=["argd", "qtcbs"], input_data=world_trace, dynamic_args=dynamic_args)
         req = QSRlib_Request_Message(which_qsr="argd", input_data=world_trace, dynamic_args=dynamic_args)
         ret = qsrlib.request_qsrs(req_msg=req)
 
-        for ep in ret.qstag.episodes:
-            print ep
-
-        for cnt, h in  zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
-            print "\n", cnt, h, ret.qstag.graphlets.graphlets[h]
-
-        sys.exit(1)
+        # for ep in ret.qstag.episodes:
+        #     print ep
+        #
         return ret
 
 
     def get_world_frame_trace(self, world_objects):
         """Accepts a dictionary of world (soma) objects.
         Adds the position of the object at each timepoint into the World Trace"""
-        self.map_world = {}
+        self.subj_world_trace = {}
         for subj in self.skeleton_map:
             ob_states={}
             world = World_Trace()
@@ -139,17 +224,17 @@ class activity_server(object):
                     y = map_frame_data[joint_id][t][1]
                     z = map_frame_data[joint_id][t][2]
                     if joint_id not in ob_states.keys():
-                        ob_states[joint_id] = [Object_State(name=joint_id, timestamp=t, x=x, y=y, z=z)]
+                        ob_states[joint_id] = [Object_State(name=joint_id, timestamp=t+1, x=x, y=y, z=z)]
                     else:
-                        ob_states[joint_id].append(Object_State(name=joint_id, timestamp=t, x=x, y=y, z=z))
+                        ob_states[joint_id].append(Object_State(name=joint_id, timestamp=t+1, x=x, y=y, z=z))
 
                 # SOMA objects
             for t in xrange(self.frames):
                 for object, (x,y,z) in world_objects.items():
                     if object not in ob_states.keys():
-                        ob_states[object] = [Object_State(name=str(object), timestamp=t, x=x, y=y, z=z)]
+                        ob_states[object] = [Object_State(name=str(object), timestamp=t+1, x=x, y=y, z=z)]
                     else:
-                        ob_states[object].append(Object_State(name=str(object), timestamp=t, x=x, y=y, z=z))
+                        ob_states[object].append(Object_State(name=str(object), timestamp=t+1, x=x, y=y, z=z))
 
                 # # Robot's position
                 # (x,y,z) = self.robot_data[t][0]
@@ -161,9 +246,8 @@ class activity_server(object):
             for obj, object_state in ob_states.items():
                 world.add_object_state_series(object_state)
 
-            self.map_world[subj] = world
-            self.get_object_frame_qsrs(world, self.objects[self.waypoint])
-
+            # get world trace for each person
+            self.subj_world_trace[subj] = self.get_object_frame_qsrs(world, self.objects[self.waypoint])
 
     def convert_to_map(self):
         self.skeleton_map = {}
@@ -187,7 +271,7 @@ class activity_server(object):
                 left_hand = self.sk_publisher.accumulate_data[subj][f].joints[5]
                 map_joint = self._convert_one_joint_to_map(left_hand)
                 self.skeleton_map[subj]['left_hand'].append(map_joint)
-
+                # print self.skeleton_map[subj]
 
     def _convert_one_joint_to_map(self,joint):
         y = joint.pose.position.x
@@ -271,22 +355,25 @@ class activity_server(object):
         objects['test'] = {}
 
 
-        objects['test'] = {'laptop_1':(-8.18, -36.13, 1.30)}
+        objects['test'] = {
+        'Printer_console_11': (-9.48, -36.13, 1.30),
+        'Printer_paper_tray_110': (-9.3, -36.13, 1.30)
+        }
         # kitchen objects
         objects['Kitchen'] = {
         'Printer_console_11': (-8.957, -17.511, 1.1),                           # fixed
-        # 'Printer_paper_tray_110': (-9.420, -18.413, 1.132),                     # fixed
+        'Printer_paper_tray_110': (-9.420, -18.413, 1.132),                     # fixed
         # 'Shelves_44': (-8.226, -15.223, 1.0),
         'Microwave_3': (-4.835, -15.812, 1.0),                                  # fixed
         'Kettle_32': (-2.511, -15.724, 1.41),                                   # fixed
         'Tea_Pot_47': (-3.855, -15.957, 1.0),                                   # fixed
-        # 'Water_Cooler_33': (-4.703, -15.558, 1.132),                            # fixed
+        'Water_Cooler_33': (-4.703, -15.558, 1.132),                            # fixed
         # 'Waste_Bin_24': (-1.982, -16.681, 0.91),                                # fixed
         # 'Waste_Bin_27': (-1.7636072635650635, -17.074087142944336, 0.5),
-        # 'Sink_28': (-2.754, -15.645, 1.046),                                    # fixed
-        # 'Fridge_7': (-2.425, -16.304, 0.885),                                   # fixed
+        'Sink_28': (-2.754, -15.645, 1.046),                                    # fixed
+        'Fridge_7': (-2.425, -16.304, 0.885),                                   # fixed
         # 'Paper_towel_111': (-1.845, -16.346, 1.213),                            # fixed
-        'Double_doors_112': (-8.365, -18.440, 1.021)
+        # 'Double_doors_112': (-8.365, -18.440, 1.021)
         }
         return objects
 
