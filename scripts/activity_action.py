@@ -69,6 +69,7 @@ class activity_server(object):
         self.online_window_img = {}
         self.act_results = {}
         self.image_pub = rospy.Publisher("/activity_recognition_results", Image, queue_size=10)
+        self.image_label = cv2.imread(datafilepath+'/image_label.png')
         self.bridge = CvBridge()
         # self.maxy = 0
         # Start server
@@ -106,8 +107,9 @@ class activity_server(object):
 
 
     def plot_online_window(self):
-        img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+        img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,self.windows_size*self.th2+59,3),dtype=np.uint8)+255
         img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
+        img[:,0:59,:] = self.image_label
 
         for subj in self.online_window_img:
             img1 = self.online_window_img[subj]
@@ -126,6 +128,8 @@ class activity_server(object):
             self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
         except CvBridgeError as e:
             print(e)
+
+        cv2.imwrite('/home/omari/test.png',img)
         #     cv2.imshow('actions',img)
         # cv2.waitKey(1)
 
