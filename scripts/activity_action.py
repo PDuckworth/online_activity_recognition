@@ -28,6 +28,9 @@ import cv2
 import colorsys
 import operator
 
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+
 import cPickle as pickle
 import time
 
@@ -65,6 +68,8 @@ class activity_server(object):
         self.online_window = {}
         self.online_window_img = {}
         self.act_results = {}
+        self.image_pub = rospy.Publisher("/activity_recognition_results", Image, queue_size=10)
+        self.bridge = CvBridge()
         # self.maxy = 0
         # Start server
         self._as.start()
@@ -101,10 +106,11 @@ class activity_server(object):
 
 
     def plot_online_window(self):
+        img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+        img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
+
         for subj in self.online_window_img:
             img1 = self.online_window_img[subj]
-
-        for subj in self.act_results:
             img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
             for f in range(self.windows_size):
                 to_be_ordered = {}
@@ -114,12 +120,14 @@ class activity_server(object):
                 for x in reversed(sorted_x):
                     img2[int(self.th_100-x[1]*self.th_100/100.0):self.th_100,f*self.th2:(f+1)*self.th2,:] = self.RGB_tuples[x[0]]
 
-            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
             img[0:len(self.code_book)*self.th,:,:] = img1
-            img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
             img[len(self.code_book)*self.th+self.th3:,:,:] = img2
-            cv2.imshow('actions',img)
-        cv2.waitKey(1)
+        try:
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+        except CvBridgeError as e:
+            print(e)
+        #     cv2.imshow('actions',img)
+        # cv2.waitKey(1)
 
 
 
