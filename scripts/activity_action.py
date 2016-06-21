@@ -25,6 +25,8 @@ from qsrlib_qstag.qstag import Activity_Graph
 from qsrlib_qstag.utils import *
 import copy
 import cv2
+import colorsys
+import operator
 
 import cPickle as pickle
 import time
@@ -55,12 +57,15 @@ class activity_server(object):
         datafilepath = os.path.join(roslib.packages.get_pkg_dir("online_activity_recognition"), "data")
         self.load_all_files(datafilepath)
         # online window of QSTAGS
-        self.windows_size = 50
+        self.windows_size = 150
         self.th = 4         # column thickness
         self.th2 = 4        # frame thickness
+        self.th3 = 4        # thickness between images
+        self.th_100 = 200   # how big is the 100%
         self.online_window = {}
         self.online_window_img = {}
         self.act_results = {}
+        # self.maxy = 0
         # Start server
         self._as.start()
 
@@ -86,7 +91,7 @@ class activity_server(object):
             self.update_online_window()
             self.recognise_activities()
             self.plot_online_window()
-            print '------------'
+            # print '------------'
             rospy.sleep(0.01)  # wait until something is published
 
             end = rospy.Time.now()
@@ -97,27 +102,32 @@ class activity_server(object):
 
     def plot_online_window(self):
         for subj in self.online_window_img:
-            img = self.online_window_img[subj]
-            cv2.imshow('QSTAGS',img)
-            # cv2.waitKey(1)
+            img1 = self.online_window_img[subj]
 
         for subj in self.act_results:
-            img = np.zeros((100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+            img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
             for f in range(self.windows_size):
+                to_be_ordered = {}
                 for act in self.act_results[subj]:
-                    print act,self.act_results[subj][act]
-                    img[int(100-self.act_results[subj][act][f]):100,f*self.th2:(f+1)*self.th2,:] = act*10
+                    to_be_ordered[act] = self.act_results[subj][act][f]
+                sorted_x = sorted(to_be_ordered.items(), key=operator.itemgetter(1))
+                for x in reversed(sorted_x):
+                    img2[int(self.th_100-x[1]*self.th_100/100.0):self.th_100,f*self.th2:(f+1)*self.th2,:] = self.RGB_tuples[x[0]]
+
+            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+            img[0:len(self.code_book)*self.th,:,:] = img1
+            img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
+            img[len(self.code_book)*self.th+self.th3:,:,:] = img2
             cv2.imshow('actions',img)
         cv2.waitKey(1)
 
-        # for subj in self.online_window:
 
 
     def recognise_activities(self):
         self.act_results = {}
         for subj in self.online_window:
             # compressing the different windows to be processed
-            for w in range(4,10,2):
+            for w in range(2,10,2):
                 for i in range(self.windows_size-w):
                     compressed_window = copy.deepcopy(self.online_window[subj][i,:])
                     for j in range(1,w+1):
@@ -129,12 +139,15 @@ class activity_server(object):
                     for act in self.actions_vectors:
                         if act not in self.act_results[subj]:
                             self.act_results[subj][act] = np.zeros((self.windows_size), dtype=np.float32)
-
-                        result = compressed_window*self.actions_vectors[act]
-                        if np.sum(result) != 0:
-                            for j in range(0,w+1):
-                                if self.act_results[subj][act][i+j] < np.sum(result):
-                                    self.act_results[subj][act][i+j] = np.sum(result)
+                        result = np.sum(compressed_window*self.actions_vectors[act])
+                        if result != 0:
+                            self.act_results[subj][act][i:i+w] += result
+                        # if act==2:
+                        #     self.act_results[subj][act][i:i+w] += 20
+        # calibration
+        for subj in self.act_results:
+            for act in self.act_results[subj]:
+                self.act_results[subj][act] /= 20
 
 
     def update_online_window(self):
@@ -159,7 +172,6 @@ class activity_server(object):
 
 
 
-
     def load_all_files(self, path):
         print "loading files..."
         date = time.strftime("%d_%m_%Y")
@@ -174,9 +186,16 @@ class activity_server(object):
         self.actions_vectors = {}
         with open(path + "/v_singular_mat_" + date + ".p", 'r') as f:
             VT = pickle.load(f)
+
+        N = 0
         for count,act in enumerate(VT):
             p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
             self.actions_vectors[count] = act/p_sum*100
+            N+=1
+        HSV_tuples = [(x*1.0/N, 0.5, 0.8) for x in range(N)]
+        self.RGB_tuples = map(lambda x: colorsys.hsv_to_rgb(*x), HSV_tuples)
+        for c,i in enumerate(self.RGB_tuples):
+            self.RGB_tuples[c] = [255*x for x in i]
 
 
     def get_object_frame_qsrs(self, world_trace, objects):
@@ -261,7 +280,7 @@ class activity_server(object):
             self.skeleton_map[subj]['right_hand'] = []
             self.skeleton_map[subj]['left_hand'] = []
             for f in range(np.max([0,all_data-frames*2]),all_data,2):
-                print '*',f
+                # print '*',f
                 # do it for right hand
                 right_hand = self.sk_publisher.accumulate_data[subj][f].joints[11]
                 map_joint = self._convert_one_joint_to_map(right_hand)
