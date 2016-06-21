@@ -122,8 +122,8 @@ class activity_server(object):
                 for x in reversed(sorted_x):
                     img2[int(self.th_100-x[1]*self.th_100/100.0):self.th_100,f*self.th2:(f+1)*self.th2,:] = self.RGB_tuples[x[0]]
 
-            img[0:len(self.code_book)*self.th,:,:] = img1
-            img[len(self.code_book)*self.th+self.th3:,:,:] = img2
+            img[0:len(self.code_book)*self.th,59:,:] = img1
+            img[len(self.code_book)*self.th+self.th3:,59:,:] = img2
         try:
             self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
         except CvBridgeError as e:
@@ -204,7 +204,7 @@ class activity_server(object):
             p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
             self.actions_vectors[count] = act/p_sum*100
             N+=1
-        HSV_tuples = [(x*1.0/N, 0.5, 0.8) for x in range(N)]
+        HSV_tuples = [(x*1.0/N, 0.7, 0.9) for x in range(N)]
         self.RGB_tuples = map(lambda x: colorsys.hsv_to_rgb(*x), HSV_tuples)
         for c,i in enumerate(self.RGB_tuples):
             self.RGB_tuples[c] = [255*x for x in i]
@@ -387,8 +387,22 @@ class activity_server(object):
 
 
         objects['test'] = {
-        'Printer_console_11': (-9.48, -36.13, 1.30),
-        'Printer_paper_tray_110': (-9.3, -36.13, 1.30)
+        # 'Printer_console_11': (-9.48, -36.13, 1.30),
+        # 'Printer_paper_tray_110': (-9.3, -36.13, 1.30)
+
+        'Printer_console_11': (-8.957, -17.511, 1.1),                           # fixed
+        'Printer_paper_tray_110': (-9.420, -18.413, 1.132),                     # fixed
+        # 'Shelves_44': (-8.226, -15.223, 1.0),
+        'Microwave_3': (-4.835, -15.812, 1.0),                                  # fixed
+        'Kettle_32': (-2.511, -15.724, 1.41),                                   # fixed
+        'Tea_Pot_47': (-3.855, -15.957, 1.0),                                   # fixed
+        'Water_Cooler_33': (-4.703, -15.558, 1.132),                            # fixed
+        # 'Waste_Bin_24': (-1.982, -16.681, 0.91),                                # fixed
+        # 'Waste_Bin_27': (-1.7636072635650635, -17.074087142944336, 0.5),
+        'Sink_28': (-2.754, -15.645, 1.046),                                    # fixed
+        'Fridge_7': (-2.425, -16.304, 0.885),                                   # fixed
+        # 'Paper_towel_111': (-1.845, -16.346, 1.213),                            # fixed
+        # 'Double_doors_112': (-8.365, -18.440, 1.021)
         }
         # kitchen objects
         objects['Kitchen'] = {
