@@ -71,12 +71,13 @@ class activity_server(object):
         self.image_pub = rospy.Publisher("/activity_recognition_results", Image, queue_size=10)
         self.image_label = cv2.imread(datafilepath+'/image_label.png')
         self.bridge = CvBridge()
-        # self.maxy = 0
-        # Start server
         self._as.start()
 
 
     def execute_cb(self, goal):
+        self.online_window = {}
+        self.online_window_img = {}
+        self.act_results = {}
         duration = goal.duration
         start = rospy.Time.now()
         end = rospy.Time.now()
@@ -107,11 +108,14 @@ class activity_server(object):
 
 
     def plot_online_window(self):
-        img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,self.windows_size*self.th2+59,3),dtype=np.uint8)+255
+        if len(self.online_window_img) == 0:
+            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2+59,  3),dtype=np.uint8)+255
+        else:
+            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2*len(self.online_window_img)+59,  3),dtype=np.uint8)+255
         img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
         img[:,0:59,:] = self.image_label
 
-        for subj in self.online_window_img:
+        for counter,subj in enumerate(self.online_window_img):
             img1 = self.online_window_img[subj]
             img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
             for f in range(self.windows_size):
@@ -122,14 +126,15 @@ class activity_server(object):
                 for x in reversed(sorted_x):
                     img2[int(self.th_100-x[1]*self.th_100/100.0):self.th_100,f*self.th2:(f+1)*self.th2,:] = self.RGB_tuples[x[0]]
 
-            img[0:len(self.code_book)*self.th,59:,:] = img1
-            img[len(self.code_book)*self.th+self.th3:,59:,:] = img2
+            img[0:len(self.code_book)*self.th,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img1
+            img[len(self.code_book)*self.th+self.th3:,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img2
+            img[:,  58+(counter+1)*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = 120
         try:
             self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
         except CvBridgeError as e:
             print(e)
 
-        cv2.imwrite('/home/omari/test.png',img)
+        # cv2.imwrite('/home/omari/test.png',img)
         #     cv2.imshow('actions',img)
         # cv2.waitKey(1)
 
