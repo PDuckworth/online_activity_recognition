@@ -116,7 +116,9 @@ class activity_server(object):
         img[:,0:59,:] = self.image_label
 
         for counter,subj in enumerate(self.online_window_img):
+            # print 'test',counter,subj
             img1 = self.online_window_img[subj]
+            cv2.imshow('test'+str(counter),self.online_window_img[subj])
             img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
             for f in range(self.windows_size):
                 to_be_ordered = {}
@@ -136,7 +138,7 @@ class activity_server(object):
 
         # cv2.imwrite('/home/omari/test.png',img)
         #     cv2.imshow('actions',img)
-        # cv2.waitKey(1)
+        cv2.waitKey(1)
 
 
 
@@ -392,8 +394,8 @@ class activity_server(object):
 
 
         objects['test'] = {
-        # 'Printer_console_11': (-9.48, -36.13, 1.30),
-        # 'Printer_paper_tray_110': (-9.3, -36.13, 1.30)
+        'Printer_console_12': (-9.48, -36.13, 1.30),
+        'Printer_paper_tray_112': (-9.3, -36.13, 1.30),
 
         'Printer_console_11': (-8.957, -17.511, 1.1),                           # fixed
         'Printer_paper_tray_110': (-9.420, -18.413, 1.132),                     # fixed
