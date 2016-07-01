@@ -391,7 +391,11 @@ class activity_server(object):
         objects['Robot_lab'] = {}
         objects['Staff_Room'] = {}
         objects['test'] = {}
-
+        objects['Corporate'] = {}
+        
+        objects['Corporate'] = {
+        'Printer_11':  (-23.734682053245283, -14.096880839756942, 1.106873440473277),
+        }
 
         objects['test'] = {
         'Printer_console_12': (-9.48, -36.13, 1.30),
