@@ -167,12 +167,14 @@ class activity_server(object):
                     for act in self.actions_vectors:
                         if act not in self.act_results[subj]:
                             self.act_results[subj][act] = np.zeros((self.windows_size), dtype=np.float32)
+
                         result = np.sum(compressed_window*self.actions_vectors[act])
                         if result != 0:
                             self.act_results[subj][act][i:i+w] += result
                         # if act==2:
                         #     self.act_results[subj][act][i:i+w] += 20
         # calibration
+
         for subj in self.act_results:
             for act in self.act_results[subj]:
                 self.act_results[subj][act] /= 20
@@ -234,6 +236,10 @@ class activity_server(object):
         for count,act in enumerate(VT):
             p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
             self.actions_vectors[count] = act/p_sum*100
+            #print self.actions_vectors[count]
+            self.actions_vectors[count][self.actions_vectors[count]<0] = 0
+            #print self.actions_vectors[count]
+            #print '----'
             N+=1
         HSV_tuples = [(x*1.0/N, 0.7, 0.9) for x in range(N)]
         self.RGB_tuples = map(lambda x: colorsys.hsv_to_rgb(*x), HSV_tuples)
@@ -425,7 +431,8 @@ class activity_server(object):
         objects['Support'] = {}
 
         objects['Kitchen'] = {
-        'Microwave_1':  (-53.894511011092348, -5.6271549435167918, 1.2075203138621333),
+        #'Microwave_1':  (-53.894511011092348, -5.6271549435167918, 1.2075203138621333),
+        'Microwave_1':  (-52.294511011092348, -5.6271549435167918, 1.2075203138621333),
         'Sink_2':  (-55.902430164089097, -5.3220418631789883, 0.95348616325025226),
         'Fruit_bowl_3':  (-55.081272358597374, -8.5550720977828973, 1.2597648941515749),
         #'Fruit_bowl_11':  (-8.957, -17.511, 1.1),
@@ -440,7 +447,7 @@ class activity_server(object):
 
         objects['Hospitality'] = {
         'Printer_8':  (-1.6876578896088092, -5.9433505603441326, 1.1084470787101761),
-        #'Sink_9':  (-8.957, -17.511, 1.1),
+        'Sink_9':  (2.9, -3, 1.1),
         #'Coffee_Machine_10': (-50.35, -5.24, 1.51)
         }
 
