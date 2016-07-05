@@ -122,7 +122,7 @@ class activity_server(object):
         img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
         h = len(self.code_book)*self.th+self.th3+self.th_100
         img[h-356:h,0:59,:] = self.image_label
-	img[:,50:59,:] = 200
+	img[:,57:59,:] = 200
 
         for counter,subj in enumerate(self.online_window_img):
             # print 'test',counter,subj
