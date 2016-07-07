@@ -237,7 +237,6 @@ class activity_server(object):
         for count,act in enumerate(VT):
             p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
             self.actions_vectors[count] = act/p_sum*100
-            print self.actions_vectors[count]
             self.actions_vectors[count][self.actions_vectors[count]<0] = 0
             #print self.actions_vectors[count]
             #print '----'
@@ -442,7 +441,11 @@ class activity_server(object):
 
         objects['Kitchen'] = {
         #'Microwave_1':  (-53.894511011092348, -5.6271549435167918, 1.2075203138621333),
-        'Microwave_2':  (-52.294511011092348, -5.6271549435167918, 1.2075203138621333),
+
+        #'Microwave_2':  (-52.294511011092348, -5.6271549435167918, 1.2075203138621333),
+
+        'Microwave_1':  (-52.294511011092348, -5.6271549435167918, 1.2075203138621333),
+
         'Sink_2':  (-55.902430164089097, -5.3220418631789883, 0.95348616325025226),
         'Fruit_bowl_3':  (-55.081272358597374, -8.5550720977828973, 1.2597648941515749),
         #'Fruit_bowl_11':  (-8.957, -17.511, 1.1),
