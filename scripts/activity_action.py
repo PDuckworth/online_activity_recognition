@@ -223,21 +223,21 @@ class activity_server(object):
         #     VT = pickle.load(f)
 
 
-        with open(path + "/code_book_MK.p", 'r') as f:
+        with open(path + "/code_book_MK3.p", 'r') as f:
             self.code_book = pickle.load(f)
 
-        with open(path + "/graphlets_MK.p", 'r') as f:
+        with open(path + "/graphlets_MK3.p", 'r') as f:
             self.graphlets = pickle.load(f)
 
         self.actions_vectors = {}
-        with open(path + "/v_singular_mat_MK.p", 'r') as f:
+        with open(path + "/v_singular_mat_MK3.p", 'r') as f:
             VT = pickle.load(f)
 
         N = 0
         for count,act in enumerate(VT):
             p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
             self.actions_vectors[count] = act/p_sum*100
-            #print self.actions_vectors[count]
+            print self.actions_vectors[count]
             self.actions_vectors[count][self.actions_vectors[count]<0] = 0
             #print self.actions_vectors[count]
             #print '----'
@@ -246,7 +246,16 @@ class activity_server(object):
         self.RGB_tuples = map(lambda x: colorsys.hsv_to_rgb(*x), HSV_tuples)
         for c,i in enumerate(self.RGB_tuples):
             self.RGB_tuples[c] = [255*x for x in i]
+            print self.RGB_tuples[c]
 
+	#self.RGB_tuples[0] = [255, 0 ,0]
+	#self.RGB_tuples[1] = [0, 255 ,0]
+	#self.RGB_tuples[2] = [0, 0 ,255]
+	#self.RGB_tuples[3] = [255, 255 ,0]
+	#self.RGB_tuples[4] = [0, 255 ,255]
+	#self.RGB_tuples[5] = [255, 0 ,255]
+	#self.RGB_tuples[6] = [20, 20 ,20]
+	#self.RGB_tuples[7] = [200, 200 ,200]
 
     def get_object_frame_qsrs(self, world_trace, objects):
         joint_types = {'left_hand': 'hand', 'right_hand': 'hand',  'head-torso': 'tpcc-plane'}
@@ -432,7 +441,7 @@ class activity_server(object):
         objects['Support'] = {}
 
         objects['Kitchen'] = {
-        'Microwave_1':  (-53.894511011092348, -5.6271549435167918, 1.2075203138621333),
+        #'Microwave_1':  (-53.894511011092348, -5.6271549435167918, 1.2075203138621333),
         'Microwave_2':  (-52.294511011092348, -5.6271549435167918, 1.2075203138621333),
         'Sink_2':  (-55.902430164089097, -5.3220418631789883, 0.95348616325025226),
         'Fruit_bowl_3':  (-55.081272358597374, -8.5550720977828973, 1.2597648941515749),
