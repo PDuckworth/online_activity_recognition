@@ -1,176 +1,246 @@
 #!/usr/bin/env python
-
 import roslib
-roslib.load_manifest('tf')
 import rospy
-import tf
+import os
 import sys
+import cv2
+import numpy as np
+from cv_bridge import CvBridge
+import getpass, datetime
+import argparse
+import sensor_msgs.msg
 from std_msgs.msg import String
 from geometry_msgs.msg import Pose, Point, Quaternion
+import topological_navigation.msg
 from strands_navigation_msgs.msg import TopologicalMap
-from online_activity_recognition.msg import skeleton_tracker_state, skeleton_message, joint_message
+from skeleton_tracker.msg import skeleton_tracker_state, skeleton_message, robot_message
 from mongodb_store.message_store import MessageStoreProxy
+from tf.transformations import euler_from_quaternion
+# from soma_msgs.msg import SOMAROIObject
+# from soma_manager.srv import *
+from shapely.geometry import Polygon, Point
+from activity_data.msg import HumanActivities
 
 class SkeletonManager(object):
+    """To deal with Skeleton messages once they are published as incremental msgs by OpenNI2."""
 
     def __init__(self):
-        self.baseFrame = '/head_xtion_depth_optical_frame'
-        self.joints = ['head', 'neck', 'torso', 'left_shoulder', 'left_elbow', 'left_hand',
-                'left_hip', 'left_knee', 'left_foot', 'right_shoulder', 'right_elbow',
-                'right_hand', 'right_hip', 'right_knee', 'right_foot']
 
-        self.data = {} #current tf frame data for 15 joints
-        self.accumulate_data = {} # accumulates multiple tf frames
-        self.users = {} # keeps the tracker state message, timepoint and UUID
+        self.accumulate_data = {} # accumulates multiple skeleton msg
+        self.accumulate_robot = {} # accumulates multiple skeleton msg
+        self.sk_mapping = {} # does something in for the image logging
+
+        self.soma_map = rospy.get_param("~soma_map", "collect_data_map_cleaned")
+        # self.soma_config = rospy.get_param("~soma_config", "test")
+
         self.map_info = "don't know"  # topological map name
         self.current_node = "don't care"  # topological node waypoint
         self.robot_pose = Pose()   # pose of the robot
+        self.ptu_pan = self.ptu_tilt = 0.0
 
-        # logging to mongo:
-        # self._with_logging = rospy.get_param("~log_skeleton", "false")
-        self._message_store = rospy.get_param("~message_store", "people_skeleton")
+        self.reduce_frame_rate_by = rospy.get_param("~frame_rate_reduce", 6) # roughly: 3-4Hz
+        self.max_num_frames = rospy.get_param("~max_frames", 500)  # roughly 2mins
+        self.soma_roi_store = MessageStoreProxy(database='somadata', collection='roi')
 
-        # initialise data to recieve tf data  ## Moved to the action
-        self.robot_pose_flag = 0
+        # directory to store the data
+        self.date = str(datetime.datetime.now().date())
 
-        # listeners:
-        self.tf_listener = tf.TransformListener()
-        rospy.Subscriber("skeleton_data/state", skeleton_tracker_state, self.tracker_state_callback)
+        # flags to make sure we received every thing
+        self._flag_robot = 0
+        self._flag_node = 0
+        self._flag_rgb = 0
+        #self._flag_rgb_sk = 0
+        self._flag_depth = 0
+
+        self.action_called = 0
+
+        self.fx = 525.0
+        self.fy = 525.0
+        self.cx = 319.5
+        self.cy = 239.5
+        # depth threshold on recordings
+        self.dist_thresh = rospy.get_param("~dist_thresh", 1.5)
+
+        # open cv stuff
+        self.cv_bridge = CvBridge()
+        self.camera = "head_xtion"
+
+        self.restrict_to_rois = 0 #rospy.get_param("~use_roi", False)
+
+        if self.restrict_to_rois:
+            self.roi_config = rospy.get_param("~roi_config", "test")
+            # SOMA services
+            rospy.loginfo("Wait for soma roi service")
+            rospy.wait_for_service('/soma/query_rois')
+            self.soma_query = rospy.ServiceProxy('/soma/query_rois',SOMAQueryROIs)
+            rospy.loginfo("Done")
+            self.get_soma_rois()
+            print "restricted to soma ROI: %s. %s" % (self.restrict_to_rois, self.roi_config)
+
+        # listeners
+        rospy.Subscriber("skeleton_data/incremental", skeleton_message, self.incremental_callback)
+        # rospy.Subscriber('/'+self.camera+'/rgb/image_color', sensor_msgs.msg.Image, callback=self.rgb_callback, queue_size=10)
+        # rospy.Subscriber('/'+self.camera+'/rgb/sk_tracks', sensor_msgs.msg.Image, callback=self.rgb_sk_callback, queue_size=10)
+        # rospy.Subscriber('/'+self.camera+'/depth/image' , sensor_msgs.msg.Image, self.depth_callback, queue_size=10)
+        rospy.Subscriber("/robot_pose", Pose, callback=self.robot_callback, queue_size=10)
         rospy.Subscriber("/current_node", String, callback=self.node_callback, queue_size=1)
-        rospy.Subscriber("/robot_pose", Pose, callback=self.robot_callback, queue_size=1)
+        rospy.Subscriber("/ptu/state", sensor_msgs.msg.JointState, callback=self.ptu_callback, queue_size=1)
         self.topo_listerner = rospy.Subscriber("/topological_map", TopologicalMap, self.map_callback, queue_size = 10)
+        rospy.Subscriber("skeleton_data/state", skeleton_tracker_state, self.state_callback)
 
-        # only publish the skeleton data when the person is far enough away (distance threshold)
-        self.frame_thresh = 5000
-        self.dist_thresh = .5
-        self.dist_flag = 1
+    def get_soma_rois(self):
+        """Restrict the logging to certain soma regions only
+           Log the ROI along with the detection - to be used in the learning
+        """
+        self.rois = {}
+        # for (roi, meta) in self.soma_roi_store.query(SOMAROIObject._type):
+        query = SOMAQueryROIsRequest(query_type=0, roiconfigs=[self.roi_config], returnmostrecent = True)
+        for roi in self.soma_query(query).rois:
+            if roi.map_name != self.soma_map: continue
+            if roi.config != self.roi_config: continue
+            #if roi.geotype != "Polygon": continue
+            k = roi.type + "_" + roi.id
+            self.rois[k] = Polygon([ (p.position.x, p.position.y) for p in roi.posearray.poses])
 
-        # initialise mongodb client
-        # if self._with_logging:
-        #     rospy.loginfo("Connecting to mongodb...%s" % self._message_store)
-        #     self._store_client = MessageStoreProxy(collection=self._message_store)
+    def convert_to_world_frame(self, pose, robot_msg):
+        """Convert a single camera frame coordinate into a map frame coordinate"""
+        fx = 525.0
+        fy = 525.0
+        cx = 319.5
+        cy = 239.5
 
-    def _initialise_data(self):
-        #to cope with upto 10 people in the scene
-        for subj in xrange(1,11):
-            self.data[subj] = {}
-            self.data[subj]['flag'] = 0
-            self.users[subj] = {"message": "New", "frame": 1, "uuid": "initial_empty"}
-            self.accumulate_data = {}
+        y,z,x = pose.x, pose.y, pose.z
 
-            for i in self.joints:
-                self.data[subj][i] = dict()
-                #self.data[subj][i]['value'] = [0,0,0]
-                #self.data[subj][i]['value'] = [0,0,0]
-                self.data[subj][i]['t_old'] = 0
+        xr = robot_msg.robot_pose.position.x
+        yr = robot_msg.robot_pose.position.y
+        zr = robot_msg.robot_pose.position.z
+        ax = robot_msg.robot_pose.orientation.x
+        ay = robot_msg.robot_pose.orientation.y
+        az = robot_msg.robot_pose.orientation.z
+        aw = robot_msg.robot_pose.orientation.w
+        roll, pr, yawr = euler_from_quaternion([ax, ay, az, aw])
 
-    def _get_tf_data(self):
-        for subj in xrange(1,11):
-            joints_found = True
-            for i in self.joints:
-                if self.tf_listener.frameExists(self.baseFrame) and joints_found:
-                    try:
-                        tp = self.tf_listener.getLatestCommonTime(self.baseFrame, self.baseFrame+"/user_%d/%s" % (subj, i))
-                        # print self.baseFrame+"/user_%d/%s" % (subj, i), tp
-                        if tp != self.data[subj][i]['t_old']:
-                            self.data[subj][i]['t_old'] = tp
-                            self.data[subj]['flag'] = 1
-                            # print 'yay',i,subj
-                            (self.data[subj][i]['value'], self.data[subj][i]['rot']) = \
-                                self.tf_listener.lookupTransform(self.baseFrame, self.baseFrame+"/user_%d/%s" % (subj, i), rospy.Time(0))
+        yawr += robot_msg.PTU_pan
+        pr += robot_msg.PTU_tilt
 
-                    except (tf.Exception, tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
-                        joints_found = False
-                        self.data[subj]['flag'] = 0  #don't publish part of this Users skeleton
-                        continue
-            # stop tracking this user after this much frames
-            if "frame" in self.users[subj]:
-                if self.users[subj]["frame"] >= self.frame_thresh:
-                    self.users[subj]["message"] = "Out of Scene"
-                    self.data[subj]['flag'] = 0
+        # transformation from camera to map
+        rot_y = np.matrix([[np.cos(pr), 0, np.sin(pr)], [0, 1, 0], [-np.sin(pr), 0, np.cos(pr)]])
+        rot_z = np.matrix([[np.cos(yawr), -np.sin(yawr), 0], [np.sin(yawr), np.cos(yawr), 0], [0, 0, 1]])
+        rot = rot_z*rot_y
 
-            #If the tracker_state is 'Out of Scene' publish the accumulated skeleton
-            if self.users[subj]["message"] == "Out of Scene" and subj in self.accumulate_data:
-                self.data[subj]['flag'] = 0
-                del self.accumulate_data[subj]
-                del self.users[subj]["uuid"]
+        pos_r = np.matrix([[xr], [yr], [zr+1.66]]) # robot's position in map frame
+        pos_p = np.matrix([[x], [-y], [-z]]) # person's position in camera frame
 
-        #For all subjects, publish the incremental skeleton and accumulate into self.data also.
-        list_of_subs = [subj for subj in self.data if self.data[subj]['flag'] == 1]
+        map_pos = rot*pos_p+pos_r # person's position in map frame
+        x_mf = map_pos[0,0]
+        y_mf = map_pos[1,0]
+        z_mf = map_pos[2,0]
 
-        incr_msg = skeleton_message()    # if no subjects detected:
-        for subj in list_of_subs:
-            if self.users[subj]["message"] != "New":
-                continue            # this catches cases where a User leaves the scene but they still have /tf data
-            self.dist_flag = 1      # initiate the distance threshold flag to 1
+        # print ">>" , x_mf, y_mf, z_mf
+        return Point(x_mf, y_mf, z_mf)
 
-            # print ">", subj,self.users[subj]["message"],self.users[subj]["frame"]
-            incr_msg = skeleton_message()
-            incr_msg.userID = subj
-            incr_msg.uuid = self.users[subj]["uuid"]
-            for i in self.joints:
-                joint = joint_message()
-                joint.name = i
-                joint.time = self.data[subj][i]['t_old']
+    def _publish_complete_data(self, subj, uuid, vis=False):
+        """when user goes "out of scene" publish their accumulated data"""
+        # print ">> publishing these: ", uuid, len(self.accumulate_data[uuid]
 
-                position = Point(x = self.data[subj][i]['value'][0], \
-                           y = self.data[subj][i]['value'][1], z = self.data[subj][i]['value'][2])
-                rot = Quaternion(x = self.data[subj][i]['rot'][0], y = self.data[subj][i]['rot'][1],
-                           z = self.data[subj][i]['rot'][2], w = self.data[subj][i]['rot'][3])
-                if self.data[subj][i]['value'][2] <= self.dist_thresh:
-                    self.dist_flag = 0
-                joint.pose.position = position
-                joint.pose.orientation = rot
-                incr_msg.joints.append(joint)
-            self.data[subj]['flag'] = 0
-            if self.dist_flag:
-                #update a frame
-                self.users[subj]["frame"] += 1
-
-                #accumulate the messages
-                if self.users[subj]["message"] == "New":
-                    self._accumulate_data(subj, incr_msg)
-                elif self.users[subj]["message"] == "No message":
-                    print "Just published this user. They are not back yet, get over it."
-                else:
-                    raise RuntimeError("this should never have occured; why is message not `New` or `Out of Scene' ??? ")
-
-    def _accumulate_data(self, subj, current_msg):
-        # accumulate the multiple skeleton messages until user goes out of scene
-        if current_msg.userID in self.accumulate_data:
-            self.accumulate_data[current_msg.userID].append(current_msg)
-        else:
-            self.accumulate_data[current_msg.userID] = [current_msg]
+        # remove the user from the users dictionary and the accumulated data dict.
+        del self.accumulate_data[uuid]
+        del self.sk_mapping[uuid]
 
 
-    def tracker_state_callback(self, msg):
-        if self.robot_pose_flag != 1: return
-        # get the tracker state message and UUID of tracker user
-        if msg.message == 'New':
-            self.users[msg.userID]["uuid"] = msg.uuid
-            self.users[msg.userID]["frame"] = 0
-        self.users[msg.userID]["message"] = msg.message
-        self.users[msg.userID]["timepoint"] = msg.timepoint
+    def incremental_callback(self, msg):
+        """accumulate the multiple skeleton messages until user goes out of scene"""
+        if self.action_called:
+            if self._flag_robot:# and self._flag_rgb and self._flag_depth:
+                if msg.uuid in self.sk_mapping:
+                    if self.sk_mapping[msg.uuid]["state"] is 'Tracking' and len(self.accumulate_data[msg.uuid]) < self.max_num_frames \
+                    and msg.joints[0].pose.position.z > self.dist_thresh:
+
+                        self.sk_mapping[msg.uuid]["msgs_recieved"]+=1
+                        if self.sk_mapping[msg.uuid]["msgs_recieved"] % self.reduce_frame_rate_by == 0:
+                            self.accumulate_data[msg.uuid].append(msg)
+                            robot_msg = robot_message(robot_pose = self.robot_pose, PTU_pan = self.ptu_pan, PTU_tilt = self.ptu_tilt)
+                            self.accumulate_robot[msg.uuid].append(robot_msg)
+                            # print msg.userID, msg.uuid, len(self.accumulate_data[msg.uuid])
+
+    def new_user_detected(self, msg):
+        date = str(datetime.datetime.now().date())
+        self.sk_mapping[msg.uuid] = {"state":'Tracking', "frame":1, "msgs_recieved":1, "date":date}
+        self.accumulate_data[msg.uuid] = []
+        self.accumulate_robot[msg.uuid] = []
+
+    def state_callback(self, msg):
+        """Reads the state messages from the openNi tracker"""
+        # print msg.uuid, msg.userID, msg.message
+        if msg.message == "Tracking":
+            self.new_user_detected(msg)
+        elif msg.message == "Out of Scene" and msg.uuid in self.sk_mapping:
+            self.sk_mapping[msg.uuid]["state"] = "Out of Scene"
+        elif msg.message == "Visible" and msg.uuid in self.sk_mapping:
+            self.sk_mapping[msg.uuid]["state"] = "Tracking"
+        elif msg.message == "Stopped tracking" and msg.uuid in self.accumulate_data:
+            if len(self.accumulate_data[msg.uuid]) != 0:
+                del self.accumulate_data[msg.uuid]
+                del self.sk_mapping[msg.uuid]
+
+                # self._publish_complete_data(msg.userID, msg.uuid)   #only publish if data captured
 
     def robot_callback(self, msg):
-        if self.robot_pose_flag != 1: return
         self.robot_pose = msg
+        if not self.restrict_to_rois:
+            if self._flag_robot == 0: self._flag_robot = 1
+        else:
+            in_a_roi = 0
+            for key, polygon in self.rois.items():
+                if polygon.contains(Point([msg.position.x, msg.position.y])):
+                    in_a_roi = 1
+                    self.roi = key
+                    self._flag_robot = 1
+            if in_a_roi == 0:
+                self._flag_robot = 0
+
+            # print self._flag_robot
+            # print "robot in ROI:", in_roi
+            # print ' >robot not in roi'
+
+    def ptu_callback(self, msg):
+        self.ptu_pan, self.ptu_tilt = msg.position
 
     def node_callback(self, msg):
-        if self.robot_pose_flag != 1: return
         self.current_node = msg.data
+        if self._flag_node == 0:
+            print ' >current node received'
+            self._flag_node = 1
 
     def map_callback(self, msg):
         # get the topological map name
         self.map_info = msg.map
         self.topo_listerner.unregister()
 
-    def get_skeleton(self):
-        self._get_tf_data()
+    def rgb_callback(self, msg):
+        # self.rgb_msg = msg
+        rgb = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        self.rgb = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        if self._flag_rgb is 0:
+            print ' >rgb image received'
+            self._flag_rgb = 1
+
+    def depth_callback(self, msg):
+        # self.depth_msg = msg
+        depth_image = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        depth_array = np.array(depth_image, dtype=np.float32)
+        ind = np.argwhere(np.isnan(depth_array))
+        depth_array[ind[:,0],ind[:,1]] = 4.0
+        depth_array *= 255/4.0
+        self.xtion_img_d_rgb = depth_array.astype(np.uint8)
+
+        if self._flag_depth is 0:
+            print ' >depth image received'
+            self._flag_depth = 1
 
 
 if __name__ == '__main__':
     rospy.init_node('skeleton_publisher', anonymous=True)
 
     sk_manager = SkeletonManager()
-    sk_manager.publish_skeleton()
+    rospy.spin()
