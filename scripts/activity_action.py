@@ -69,12 +69,12 @@ class activity_server(object):
         # load files
         self.load_all_files(datafilepath)
         # online window of QSTAGS
-        self.windows_size = 150
+        self.windows_size = 100
         self.th = 4         # column thickness
         self.th2 = 4        # frame thickness
         self.th3 = 4        # thickness between images
         self.th_100 = 200   # how big is the 100%
-        self.qsr_median_window = 3   # smooth the QSR relations
+        self.qsr_median_window = 1   # smooth the QSR relations
         self.online_window = {}
         self.online_window_img = {}
         self.act_results = {}
@@ -104,15 +104,23 @@ class activity_server(object):
         # self.waypoint = goal.waypoint
 
         self.set_ptu_state(goal.waypoint)  # set this by selecting an object in the roi ?
-        self.get_rotation_matrix()
-        prev_uuid = ""
+        # self.get_rotation_matrix()
+        # prev_uuid = ""
+        if goal.waypoint == "offline":
+            print "running offline..."
+
+            self.sk_publisher.offline = 1
+            video = "vid50"
+            self.sk_publisher.offline_directory = "/home/scpd/Datasets/ECAI_Data/dataset_segmented_15_12_16/"
+            self.sk_publisher.run_offline_instead_of_callback(video)
+        else:
+            self.sk_publisher.action_called = 1
 
         while (end - start).secs < duration.secs:
             if self._as.is_preempt_requested():
+                print ">> preempt_requested\n"
                 break
 
-            # self.sk_publisher.get_skeleton()
-            self.sk_publisher.action_called = 1
             self.convert_to_map()
 
             # THIS SHOULD USE MONGO like the logger does
@@ -129,7 +137,7 @@ class activity_server(object):
         # after the action reset everything
         self.reset_all()
         self._as.set_succeeded(recogniseActionResult())
-
+        print ">> set_succeeded\n"
 
     def plot_online_window(self):
         if len(self.online_window_img) == 0:
@@ -141,6 +149,7 @@ class activity_server(object):
         img[h-356:h,0:59,:] = self.image_label
         img[:,50:59,:] = 200
 
+        img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
         for counter,subj in enumerate(self.online_window_img):
             # print 'test',counter,subj
             img1 = self.online_window_img[subj]
@@ -158,7 +167,8 @@ class activity_server(object):
             img[len(self.code_book)*self.th+self.th3:,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img2
             img[:,  58+(counter+1)*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = 120
         try:
-            self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(img2, "bgr8"))
+            # self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
         except CvBridgeError as e:
             print(e)
 
@@ -168,7 +178,6 @@ class activity_server(object):
 
     def recognise_activities(self):
         self.act_results = {}
-
         for subj, window in self.online_window.items():
             # compressing the different windows to be processed
             for w in range(2,10,2):
@@ -177,7 +186,8 @@ class activity_server(object):
                     for j in range(1,w+1):
                         compressed_window += window[j+i,:]
 
-                    if sum(compressed_window) !=0: compressed_window /= compressed_window
+                    compressed_window = [1 if o !=0 else 0 for o in compressed_window]
+                    # compressed_window /= compressed_window
 
                     # comparing the processed windows with the different actions
                     if subj not in self.act_results:
@@ -192,11 +202,9 @@ class activity_server(object):
                         # if act==2:
                         #     self.act_results[subj][act][i:i+w] += 20
         # calibration
-
         for subj in self.act_results:
             for act in self.act_results[subj]:
                 self.act_results[subj][act] /= 20
-
 
     def update_online_window(self):
         for subj in self.subj_world_trace:
@@ -215,10 +223,17 @@ class activity_server(object):
             self.online_window_img[subj][:, 0:self.th2, :] = 255
             #print self.code_book
             #print ret.qstag.graphlets.graphlets
+
             for cnt, h in zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
-                print cnt, h, ret.qstag.graphlets.graphlets[h]
-                if h in self.code_book:
-                    index = list(self.code_book).index(h)
+                # print ">>>", cnt, h #, ret.qstag.graphlets.graphlets[h]
+
+                if isinstance(h, int):
+                    h = "{:20d}".format(h).lstrip()
+                # print h, len(self.code_book), type(self.code_book), self.code_book.shape
+                code_book = [str(i) for i in self.code_book]
+                if str(h) in code_book:  # Futures WARNING here
+                    index = list(code_book).index(h)
+                    # print ">>>HERE"
                     self.online_window[subj][0,index] = 1
                     self.online_window_img[subj][index*self.th:index*self.th+self.th, 0:self.th2, :] = 10
 
@@ -238,7 +253,6 @@ class activity_server(object):
         # with open(path + "/v_singular_mat_" + date + ".p", 'r') as f:
         #     VT = pickle.load(f)
 
-
         # with open(path + "/code_book_MK3.p", 'r') as f:
         #     self.code_book = pickle.load(f)
         # print "codebook:", len(self.code_book)
@@ -248,6 +262,10 @@ class activity_server(object):
 
         self.code_book = data[0]
         print "codebook:", len(self.code_book)
+        graphlets = data[1]
+        # for cnt, g in enumerate(graphlets):
+        #     os, ss, ts = nodes(g)
+        #     ssl = [d.values() for d in ss]
 
         # with open(path + "/graphlets_MK3.p", 'r') as f:
         #     self.graphlets = pickle.load(f)
@@ -259,6 +277,7 @@ class activity_server(object):
 
         N = 0
         for count,act in enumerate(VT):
+
             p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
             self.actions_vectors[count] = act/p_sum*100
             self.actions_vectors[count][self.actions_vectors[count]<0] = 0
@@ -301,8 +320,8 @@ class activity_server(object):
         # dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.05, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         # dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 2}}
 
-        # dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.25, 'Near': 0.5, 'Away': 1.0, 'Ignore': 10}}
-        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.55, 'Near': 1.5, 'Away': 2.5, 'Ignore': 10}}
+        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.25, 'Near': 0.5, 'Away': 1.0, 'Ignore': 10}}
+        # dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.25, 'Near': 1.0, 'Away': 2.0, 'Ignore': 10}}
         dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.01, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 2, "max_eps": 4}}
         dynamic_args["filters"] = {"median_filter": {"window": self.qsr_median_window}}
@@ -312,9 +331,9 @@ class activity_server(object):
         #req = QSRlib_Request_Message(which_qsr="argd", input_data=world_trace, dynamic_args=dynamic_args)
         ret = qsrlib.request_qsrs(req_msg=req)
 
-        # for ep in ret.qstag.episodes:
-        #     print ep
-        #
+        print "\n"
+        for ep in ret.qstag.episodes:
+            print ep
         return ret
 
 
@@ -322,11 +341,15 @@ class activity_server(object):
         """Accepts a dictionary of world (soma) objects.
         Adds the position of the object at each timepoint into the World Trace"""
         self.subj_world_trace = {}
+
+
         for subj in self.skeleton_map:
+            print ">", len(self.skeleton_map[subj]["left_hand"])
             ob_states={}
             world = World_Trace()
             map_frame_data = self.skeleton_map[subj]
             for joint_id in map_frame_data.keys():
+
                 #Joints:
                 for t in xrange(self.frames):
                     x = map_frame_data[joint_id][t][0]
@@ -337,7 +360,7 @@ class activity_server(object):
                     else:
                         ob_states[joint_id].append(Object_State(name=joint_id, timestamp=t+1, x=x, y=y, z=z))
 
-                # SOMA objects
+            # SOMA objects
             for t in xrange(self.frames):
                 for object, (x,y,z) in world_objects.items():
                     if object not in ob_states.keys():
@@ -359,70 +382,90 @@ class activity_server(object):
             # region = self.soma_roi_config[self.waypoint]
             self.subj_world_trace[subj] = self.get_object_frame_qsrs(world, self.objects)
 
+            if self.sk_publisher.offline == 1:
+                self.skeleton_map[subj]["left_hand"] = self.skeleton_map[subj]["left_hand"][2:]
+                self.skeleton_map[subj]["right_hand"] = self.skeleton_map[subj]["right_hand"][2:]
+
+
+
     def convert_to_map(self):
         self.skeleton_map = {}
-        frames = 10      # frames to be processed
+        frames = 20      # frames to be processed
         self.frames = frames
+
         for subj in self.sk_publisher.accumulate_data.keys():
+
             all_data = len(self.sk_publisher.accumulate_data[subj])
             if all_data<frames*2:
                 continue
+            print all_data
+            if self.sk_publisher.offline == 1:
+                new_range = range(0,frames*2, 2)
+            else:
+                new_range = range(np.max([0, all_data-frames*2]), all_data,2)
+
             self.skeleton_map[subj] = {}
             self.skeleton_map[subj]['right_hand'] = []
             self.skeleton_map[subj]['left_hand'] = []
-            for f in range(np.max([0,all_data-frames*2]),all_data,2):
-                # print '*',f
-                # do it for right hand
-                right_hand = self.sk_publisher.accumulate_data[subj][f].joints[11]
-                map_joint = self._convert_one_joint_to_map(right_hand)
-                self.skeleton_map[subj]['right_hand'].append(map_joint)
+            for f in new_range:
+                print '*',f
+                robot_pose = self.sk_publisher.accumulate_robot[subj][f]
 
-                # do it for left hand
-                left_hand = self.sk_publisher.accumulate_data[subj][f].joints[5]
-                map_joint = self._convert_one_joint_to_map(left_hand)
-                self.skeleton_map[subj]['left_hand'].append(map_joint)
-                # print self.skeleton_map[subj]
+                for j, name in zip([7, 3],["right_hand", "left_hand"]):
+                    hand = self.sk_publisher.accumulate_data[subj][f].joints[j].pose.position
+                    map_point = self.sk_publisher.convert_to_world_frame(hand, robot_pose)
+                    map_joint = [map_point.x, map_point.y, map_point.z]
+                    self.skeleton_map[subj][name].append(map_joint)
+                    # import pdb; pdb.set_trace()
 
-    def _convert_one_joint_to_map(self,joint):
-        y = joint.pose.position.x
-        z = joint.pose.position.y
-        x = joint.pose.position.z
-        pos_p = np.matrix([[x], [-y], [z]])     # person's position in camera frame
-        map_pos = self.rot*pos_p+self.pos_robot # person's position in map frame
-        x_mf = map_pos[0,0]
-        y_mf = map_pos[1,0]
-        z_mf = map_pos[2,0]
-        return [x_mf,y_mf,z_mf]
+            if self.sk_publisher.offline == 1:
+                self.sk_publisher.accumulate_data[subj] = self.sk_publisher.accumulate_data[subj][2:]
 
 
-    def get_rotation_matrix(self):
+                # map_joint = self._convert_one_joint_to_map(right_hand)
+                # map_joint = self._convert_one_joint_to_map(left_hand)
+                # self.skeleton_map[subj]['left_hand'].append(map_joint)
+        # print self.skeleton_map[subj]
 
-        try:
-            pan = float(self.sk_publisher.ptu_pan)
-            tilt = float(self.sk_publisher.ptu_tilt)
+    # def _convert_one_joint_to_map(self,joint):
+    #     y = joint.pose.position.x
+    #     z = joint.pose.position.y
+    #     x = joint.pose.position.z
+    #     pos_p = np.matrix([[x], [-y], [z]])     # person's position in camera frame
+    #     map_pos = self.rot*pos_p+self.pos_robot # person's position in map frame
+    #     x_mf = map_pos[0,0]
+    #     y_mf = map_pos[1,0]
+    #     z_mf = map_pos[2,0]
+    #     return [x_mf,y_mf,z_mf]
 
-            # pan = self.config[waypoint]['pan']
-            # tilt = self.config[waypoint]['tilt']
-        except KeyError:
-            print 'could not listen to ptu settings'
-            pan, tilt = float(0), float(0)
 
-        xr = self.robot_pose.position.x
-        yr = self.robot_pose.position.y
-        zr = self.robot_pose.position.z
-
-        ax = self.robot_pose.orientation.x
-        ay = self.robot_pose.orientation.y
-        az = self.robot_pose.orientation.z
-        aw = self.robot_pose.orientation.w
-
-        roll, pitch, yaw = euler_from_quaternion([ax, ay, az, aw])    #odom
-        yaw   += pan*math.pi / 180.                   # this adds the pan of the ptu state when recording took place.
-        pitch += tilt*math.pi / 180.                # this adds the tilt of the ptu state when recording took place.
-        rot_y = np.matrix([[np.cos(pitch), 0, np.sin(pitch)], [0, 1, 0], [-np.sin(pitch), 0, np.cos(pitch)]])
-        rot_z = np.matrix([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
-        self.rot = rot_z*rot_y
-        self.pos_robot = np.matrix([[xr], [yr], [zr+1.66]]) # robot's position in map frame
+    # def get_rotation_matrix(self):
+    #
+    #     try:
+    #         pan = float(self.sk_publisher.ptu_pan)
+    #         tilt = float(self.sk_publisher.ptu_tilt)
+    #         # pan = self.config[waypoint]['pan']
+    #         # tilt = self.config[waypoint]['tilt']
+    #     except KeyError:
+    #         print 'could not listen to ptu settings'
+    #         pan, tilt = float(0), float(0)
+    #
+    #     xr = self.robot_pose.position.x
+    #     yr = self.robot_pose.position.y
+    #     zr = self.robot_pose.position.z
+    #
+    #     ax = self.robot_pose.orientation.x
+    #     ay = self.robot_pose.orientation.y
+    #     az = self.robot_pose.orientation.z
+    #     aw = self.robot_pose.orientation.w
+    #
+    #     roll, pitch, yaw = euler_from_quaternion([ax, ay, az, aw])    #odom
+    #     yaw   += pan*math.pi / 180.                   # this adds the pan of the ptu state when recording took place.
+    #     pitch += tilt*math.pi / 180.                # this adds the tilt of the ptu state when recording took place.
+    #     rot_y = np.matrix([[np.cos(pitch), 0, np.sin(pitch)], [0, 1, 0], [-np.sin(pitch), 0, np.cos(pitch)]])
+    #     rot_z = np.matrix([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
+    #     self.rot = rot_z*rot_y
+    #     self.pos_robot = np.matrix([[xr], [yr], [zr+1.66]]) # robot's position in map frame
 
 
     def robot_callback(self, msg):
@@ -506,9 +549,27 @@ class activity_server(object):
                     line=f.readline()
                     (labs,xyz) = line.replace("\n","").split(":")
                     x,y,z = xyz.split(",")
-                    objects["object_%s_%s" % (file_num,file_num)] = (float(x),float(y),float(z)) # hack to keep file_num when object type is passed to QSRLib
-        objects["object_9_21"] = (-7.7,-35.0,1.0)
+                    string = "object_%s_%s" % (int(file_num),int(file_num))
+                    objects[string] = (float(x),float(y),float(z)) # hack to keep file_num when object type is passed to QSRLib
+
+        # objects["object_21_21"] = (-7.7,-35.0,1.0)
+        # objects["object_13_13"] = (-7.0,-34.2,1.0)
+        # objects["object_17_17"] = (-8.5,-31.0,1.0)
         return objects
+
+def nodes(graph):
+    """Getter.
+    """
+    # Get object nodes from graph
+    objects, spa, temp = [], [], []
+    for node in graph.vs():
+        if node['node_type'] == 'object':
+            objects.append(node['name'])
+        if node['node_type'] == 'spatial_relation':
+            spa.append(node['name'])
+        if node['node_type'] == 'temporal_relation':
+            temp.append(node['name'])
+    return objects, spa, temp
 
 if __name__ == "__main__":
     rospy.init_node('activity_action_server')
