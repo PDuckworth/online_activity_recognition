@@ -26,7 +26,9 @@ class SkeletonManager(object):
     """To deal with Skeleton messages once they are published as incremental msgs by OpenNI2."""
 
     def __init__(self, offline=0):
-
+        
+        self.offline=offline
+        
         self.accumulate_data = {} # accumulates multiple skeleton msg
         self.accumulate_robot = {} # accumulates multiple skeleton msg
         self.sk_mapping = {} # does something in for the image logging
