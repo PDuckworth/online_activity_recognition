@@ -39,11 +39,19 @@ class activity_server(object):
         # subscribe to robot pose to get location
         rospy.Subscriber("/robot_pose", Pose, callback=self.robot_callback, queue_size=10)
 
-        # get some objects
-        datafilepath = os.path.join(roslib.packages.get_pkg_dir("online_activity_recognition"), "data")
+        # # get some objects
+        # datafilepath = os.path.join(roslib.packages.get_pkg_dir("online_activity_recognition"), "data")
+        datafilepath = '/home/' + getpass.getuser() + '/SkeletonDataset/Learning/accumulate_data/'
+
         # self.objects = self.get_soma_objects()
-        path = os.path.join(datafilepath, 'point_cloud_object_clusters')
-        self.objects = self.get_point_cloud_objects(path)
+        # path = os.path.join(datafilepath, 'point_cloud_object_clusters')
+        # self.objects = self.get_point_cloud_objects(path)
+
+        self.soma_id_store = MessageStoreProxy(database='message_store', collection='soma_activity_ids_list')
+        self.soma_store = MessageStoreProxy(database="somadata", collection="object")
+        self.get_soma_objects()
+
+
 
         # Start server
         rospy.loginfo("Activity Recognition starting an action server")
@@ -125,7 +133,7 @@ class activity_server(object):
 
             # THIS SHOULD USE MONGO like the logger does
             # region = self.soma_roi_config[self.waypoint]
-            self.get_world_frame_trace(self.objects)
+            self.get_world_frame_trace()
 
             self.update_online_window()
             self.recognise_activities()
@@ -138,6 +146,31 @@ class activity_server(object):
         self.reset_all()
         self._as.set_succeeded(recogniseActionResult())
         print ">> set_succeeded\n"
+
+
+    def get_soma_objects(self):
+        """srv call to mongo and get the list of new objects and locations"""
+
+        ids = self.soma_id_store.query(String._type)
+        ids = [id_[0].data for id_ in ids]
+        print "SOMA IDs used to observe >> ", ids
+
+        objs = self.soma_store.query(SOMAObject._type, message_query = {"id":{"$in": ids}})
+        all_objects = {}
+        self.soma_objects = {}
+        for (ob, meta) in objs:
+            if ob.id in ids:
+                k = ob.type + "_" + ob.id
+                p = ob.pose.position
+                all_objects[k] = (p.x, p.y, p.z)
+        #print "\nall_objects> ", all_objects.keys()
+
+        for r, poly in self.rois.items():
+            self.soma_objects[r] = {}
+            for (ob, (x,y,z)) in all_objects.items():
+                if poly.contains(Point([x, y])):
+                    self.soma_objects[r][ob] = (x,y,z)
+        print "objects >> ", [self.soma_objects[k].keys() for k in self.soma_objects.keys()]
 
     def plot_online_window(self):
         if len(self.online_window_img) == 0:
@@ -257,12 +290,19 @@ class activity_server(object):
         #     self.code_book = pickle.load(f)
         # print "codebook:", len(self.code_book)
 
-        with open(path + "/codebook_data.p", 'r') as f:
-            data = pickle.load(f)
+        date_files = sorted([f for f in listdir(path)])
+        print "??", date_files
+        path = os.path.join(path, date_files[-1])
 
-        self.code_book = data[0]
+        with open(path + "/code_book.p", 'r') as f:
+            self.code_book = pickle.load(f)
+        with open(path + "/graphlets.p", 'r') as f:
+            graphlets = pickle.load(f)
+
+
+        # self.code_book = data[0]
         print "codebook:", len(self.code_book)
-        graphlets = data[1]
+        # graphlets = data[1]
         # for cnt, g in enumerate(graphlets):
         #     os, ss, ts = nodes(g)
         #     ssl = [d.values() for d in ss]
@@ -271,7 +311,7 @@ class activity_server(object):
         #     self.graphlets = pickle.load(f)
 
         self.actions_vectors = {}
-        with open(path + "/topic_words_.p", 'r') as f:
+        with open(path + "/topic_word.p", 'r') as f:
             VT = pickle.load(f)
             print "actions:", VT.shape
 
@@ -299,18 +339,18 @@ class activity_server(object):
 	#self.RGB_tuples[6] = [20, 20 ,20]
 	#self.RGB_tuples[7] = [200, 200 ,200]
 
-    def get_object_frame_qsrs(self, world_trace, objects):
+    def get_object_frame_qsrs(self, world_trace):
         joint_types = {'left_hand': 'hand', 'right_hand': 'hand',  'head-torso': 'tpcc-plane'}
 
         joint_types_plus_objects = joint_types.copy()
-        for object in objects:
+        for object in self.objects:
             generic_object = "_".join(object.split("_")[:-1])
             joint_types_plus_objects[object] = generic_object
         #print joint_types_plus_objects
 
         """create QSRs between the person's joints and the soma objects in map frame"""
         qsrs_for=[]
-        for ob in objects:
+        for ob in self.objects:
             qsrs_for.append((str(ob), 'left_hand'))
             qsrs_for.append((str(ob), 'right_hand'))
             #qsrs_for.append((str(ob), 'torso'))
@@ -320,15 +360,15 @@ class activity_server(object):
         # dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.05, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         # dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 2}}
 
-        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.25, 'Near': 0.5, 'Away': 1.0, 'Ignore': 10}}
+        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.5, 'Near': 0.1, 'Away': 1.5, 'Ignore': 10}}
         # dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.25, 'Near': 1.0, 'Away': 2.0, 'Ignore': 10}}
         dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.01, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
-        dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 2, "max_eps": 4}}
+        dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 3}}
         dynamic_args["filters"] = {"median_filter": {"window": self.qsr_median_window}}
 
         qsrlib = QSRlib()
         req = QSRlib_Request_Message(which_qsr=["argd", "qtcbs"], input_data=world_trace, dynamic_args=dynamic_args)
-        #req = QSRlib_Request_Message(which_qsr="argd", input_data=world_trace, dynamic_args=dynamic_args)
+        req = QSRlib_Request_Message(which_qsr="argd", input_data=world_trace, dynamic_args=dynamic_args)
         ret = qsrlib.request_qsrs(req_msg=req)
 
         print "\n"
@@ -337,7 +377,7 @@ class activity_server(object):
         return ret
 
 
-    def get_world_frame_trace(self, world_objects):
+    def get_world_frame_trace(self):
         """Accepts a dictionary of world (soma) objects.
         Adds the position of the object at each timepoint into the World Trace"""
         self.subj_world_trace = {}
@@ -362,7 +402,7 @@ class activity_server(object):
 
             # SOMA objects
             for t in xrange(self.frames):
-                for object, (x,y,z) in world_objects.items():
+                for object, (x,y,z) in self.objects.items():
                     if object not in ob_states.keys():
                         ob_states[object] = [Object_State(name=str(object), timestamp=t+1, x=x, y=y, z=z)]
                     else:
@@ -380,7 +420,7 @@ class activity_server(object):
 
             # get world trace for each person
             # region = self.soma_roi_config[self.waypoint]
-            self.subj_world_trace[subj] = self.get_object_frame_qsrs(world, self.objects)
+            self.subj_world_trace[subj] = self.get_object_frame_qsrs(world)
 
             if self.sk_publisher.offline == 1:
                 self.skeleton_map[subj]["left_hand"] = self.skeleton_map[subj]["left_hand"][2:]
@@ -500,7 +540,7 @@ class activity_server(object):
         except KeyError:
             self.reset_ptu()
 
-    def get_soma_objects(region=None):
+    def get_fixed_objects(region=None):
         objects = {}
         objects['Kitchen'] = {}
         objects['Reception'] = {}
