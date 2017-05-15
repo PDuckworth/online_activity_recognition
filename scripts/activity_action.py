@@ -10,6 +10,7 @@ import getpass, datetime
 import shutil
 from std_msgs.msg import String
 from scitos_ptu.msg import *
+from mongodb_store.message_store import MessageStoreProxy
 from skeleton_manager import SkeletonManager
 from online_activity_recognition.msg import recogniseAction, recogniseActionResult, skeleton_message
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
@@ -31,6 +32,11 @@ import operator
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 
+from std_msgs.msg import String, Header
+from soma_msgs.msg import SOMAObject, SOMAROIObject
+from soma_manager.srv import *
+from shapely.geometry import Polygon, Point
+
 import cPickle as pickle
 import time
 
@@ -42,10 +48,21 @@ class activity_server(object):
         # # get some objects
         # datafilepath = os.path.join(roslib.packages.get_pkg_dir("online_activity_recognition"), "data")
         datafilepath = '/home/' + getpass.getuser() + '/SkeletonDataset/Learning/accumulate_data/'
+        datafilepath2 = os.path.join(roslib.packages.get_pkg_dir("online_activity_recognition"), "data")
 
         # self.objects = self.get_soma_objects()
         # path = os.path.join(datafilepath, 'point_cloud_object_clusters')
         # self.objects = self.get_point_cloud_objects(path)
+
+
+        # SOMA services
+        rospy.loginfo("Wait for soma roi service")
+        rospy.wait_for_service('/soma/query_rois')
+        self.soma_query = rospy.ServiceProxy('/soma/query_rois', SOMAQueryROIs)
+        rospy.loginfo("Done")
+
+        self.soma_roi_store = MessageStoreProxy(database='somadata', collection='roi')
+        self.get_soma_rois(soma_map="aaf_y4_demo", roi_config="human_activity")
 
         self.soma_id_store = MessageStoreProxy(database='message_store', collection='soma_activity_ids_list')
         self.soma_store = MessageStoreProxy(database="somadata", collection="object")
@@ -72,23 +89,23 @@ class activity_server(object):
         # PTU state - based upon current_node callback
         self.ptu_action_client = actionlib.SimpleActionClient('/SetPTUState', PtuGotoAction)
         print "pan tilt unit..."
-        self.ptu_action_client.wait_for_server()
+        #self.ptu_action_client.wait_for_server()
 
         # load files
         self.load_all_files(datafilepath)
         # online window of QSTAGS
-        self.windows_size = 100
+        self.windows_size = 150
         self.th = 4         # column thickness
         self.th2 = 4        # frame thickness
         self.th3 = 4        # thickness between images
-        self.th_100 = 200   # how big is the 100%
+        self.th_100 = 500   # how big is the 100%
         self.qsr_median_window = 1   # smooth the QSR relations
         self.online_window = {}
         self.online_window_img = {}
         self.act_results = {}
 
         self.image_pub = rospy.Publisher("/activity_recognition_results", Image, queue_size=10)
-        self.image_label = cv2.imread(datafilepath+'/image_label.png')
+        self.image_label = cv2.imread(datafilepath2+'/image_label.png')
         self.bridge = CvBridge()
         self._as.start()
 
@@ -111,7 +128,8 @@ class activity_server(object):
         # self.sk_publisher.robot_pose_flag = 1
         # self.waypoint = goal.waypoint
 
-        self.set_ptu_state(goal.waypoint)  # set this by selecting an object in the roi ?
+        #self.set_ptu_state(goal.waypoint)  # set this by selecting an object in the roi ?
+        
         # self.get_rotation_matrix()
         # prev_uuid = ""
         if goal.waypoint == "offline":
@@ -122,6 +140,7 @@ class activity_server(object):
             self.sk_publisher.offline_directory = "/home/scpd/Datasets/ECAI_Data/dataset_segmented_15_12_16/"
             self.sk_publisher.run_offline_instead_of_callback(video)
         else:
+            print "skeleton pub called"
             self.sk_publisher.action_called = 1
 
         while (end - start).secs < duration.secs:
@@ -155,31 +174,60 @@ class activity_server(object):
         ids = [id_[0].data for id_ in ids]
         print "SOMA IDs used to observe >> ", ids
 
-        objs = self.soma_store.query(SOMAObject._type, message_query = {"id":{"$in": ids}})
+        objs = self.soma_store.query(SOMAObject._type, message_query = {})#"id":{"$in": ids}})
+        #print "obb", objs
+
         all_objects = {}
         self.soma_objects = {}
         for (ob, meta) in objs:
-            if ob.id in ids:
-                k = ob.type + "_" + ob.id
-                p = ob.pose.position
-                all_objects[k] = (p.x, p.y, p.z)
+            #if ob.id in ids:
+            k = ob.type + "_" + ob.id
+            print k, type(k)
+            p = ob.pose.position
+            all_objects[str(k)] = (p.x, p.y, p.z)
         #print "\nall_objects> ", all_objects.keys()
 
+        self.soma_objects = {}
         for r, poly in self.rois.items():
-            self.soma_objects[r] = {}
+            #self.soma_objects[r] = {}
             for (ob, (x,y,z)) in all_objects.items():
+                #print "1.", ob, type(ob)
                 if poly.contains(Point([x, y])):
-                    self.soma_objects[r][ob] = (x,y,z)
-        print "objects >> ", [self.soma_objects[k].keys() for k in self.soma_objects.keys()]
+                    self.soma_objects[str(ob)] = (x,y,z+1.2) #[r][ob] = (x,y,z)
+        #print "objects >> ", [self.soma_objects[k].keys() for k in self.soma_objects.keys()]
+        print "objects ", self.soma_objects.keys()
+        print type(self.soma_objects.keys()[0])
+        self.objects = self.soma_objects
+
+    def get_soma_rois(self, soma_map, roi_config):
+        """Restrict the logging to certain soma regions only
+           Log the ROI along with the detection - to be used in the learning
+        """
+        self.rois = {}
+        # for (roi, meta) in self.soma_roi_store.query(SOMAROIObject._type):
+        query = SOMAQueryROIsRequest(query_type=0, roiconfigs=[roi_config], returnmostrecent = True)
+        for roi in self.soma_query(query).rois:
+            if roi.map_name != soma_map: continue
+            if roi.config != roi_config: continue
+            #if roi.geotype != "Polygon": continue
+            k = roi.type + "_" + roi.id
+            self.rois[k] = Polygon([ (p.position.x, p.position.y) for p in roi.posearray.poses])
+
 
     def plot_online_window(self):
+
         if len(self.online_window_img) == 0:
             img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2+59,  3),dtype=np.uint8)+255
         else:
             img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2*len(self.online_window_img)+59,  3),dtype=np.uint8)+255
         img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
         h = len(self.code_book)*self.th+self.th3+self.th_100
-        img[h-356:h,0:59,:] = self.image_label
+
+        #print "1. ", h, self.image_label.shape
+        #print "2. ", img.shape
+        #print "3. ", len(self.code_book)
+        #img[h-356:h,0:59,:] = self.image_label
+
         img[:,50:59,:] = 200
 
         img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
@@ -208,6 +256,7 @@ class activity_server(object):
         # cv2.imwrite('/home/omari/test.png',img)
         #     cv2.imshow('actions',img)
         cv2.waitKey(1)
+
 
     def recognise_activities(self):
         self.act_results = {}
@@ -258,16 +307,19 @@ class activity_server(object):
             #print ret.qstag.graphlets.graphlets
 
             for cnt, h in zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
-                # print ">>>", cnt, h #, ret.qstag.graphlets.graphlets[h]
+                oss, ss, ts  = nodes(ret.qstag.graphlets.graphlets[h])
+                ssl = [d.values() for d in ss]
+                #if "Microwave" in oos:
+                #print ">>>", cnt, h, type(h) #, #oss, ssl #ret.qstag.graphlets.graphlets[h]
 
                 if isinstance(h, int):
                     h = "{:20d}".format(h).lstrip()
-                # print h, len(self.code_book), type(self.code_book), self.code_book.shape
-                code_book = [str(i) for i in self.code_book]
-                if str(h) in code_book:  # Futures WARNING here
-                    index = list(code_book).index(h)
-                    # print ">>>HERE"
-                    self.online_window[subj][0,index] = 1
+                #print cnt, h, type(h), len(h), len(self.code_book), len(self.code_book[0]) #, self.code_book.shape
+                #code_book = [str(i) for i in self.code_book]
+                if h in self.code_book:  # Futures WARNING here
+                    index = list(self.code_book).index(h)
+                    #print ">>>HERE"
+                    self.online_window[subj][0, index] = 1
                     self.online_window_img[subj][index*self.th:index*self.th+self.th, 0:self.th2, :] = 10
 
 
@@ -290,22 +342,27 @@ class activity_server(object):
         #     self.code_book = pickle.load(f)
         # print "codebook:", len(self.code_book)
 
-        date_files = sorted([f for f in listdir(path)])
-        print "??", date_files
+        date_files = sorted([f for f in os.listdir(path)])
+        print "date: ", date_files
         path = os.path.join(path, date_files[-1])
 
         with open(path + "/code_book.p", 'r') as f:
-            self.code_book = pickle.load(f)
+            code_book = pickle.load(f)
         with open(path + "/graphlets.p", 'r') as f:
             graphlets = pickle.load(f)
 
+        self.code_book = list(code_book) #[ "{:20.0f}".format(hash).lstrip() for hash in list(code_book)]
+        #for i,j in zip(graphlets,self.code_book):
+        #    print i, j, type(j), len(j)
 
         # self.code_book = data[0]
         print "codebook:", len(self.code_book)
         # graphlets = data[1]
-        # for cnt, g in enumerate(graphlets):
-        #     os, ss, ts = nodes(g)
-        #     ssl = [d.values() for d in ss]
+        for cnt, (g, c) in enumerate(zip(graphlets, self.code_book)):
+            oss, ss, ts = nodes(g)
+            ssl = [d.values() for d in ss]
+            #if "Microwave" in oss:
+            print c, oss, ssl
 
         # with open(path + "/graphlets_MK3.p", 'r') as f:
         #     self.graphlets = pickle.load(f)
@@ -360,20 +417,20 @@ class activity_server(object):
         # dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.05, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         # dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 2}}
 
-        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.5, 'Near': 0.1, 'Away': 1.5, 'Ignore': 10}}
-        # dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 0.25, 'Near': 1.0, 'Away': 2.0, 'Ignore': 10}}
+        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Near': 0.5, 'Away': 1.5, 'Ignore': 10}}
+        #dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 1.5, 'Ignore': 10}}
         dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.01, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 3}}
         dynamic_args["filters"] = {"median_filter": {"window": self.qsr_median_window}}
 
         qsrlib = QSRlib()
         req = QSRlib_Request_Message(which_qsr=["argd", "qtcbs"], input_data=world_trace, dynamic_args=dynamic_args)
-        req = QSRlib_Request_Message(which_qsr="argd", input_data=world_trace, dynamic_args=dynamic_args)
+        #req = QSRlib_Request_Message(which_qsr="argd", input_data=world_trace, dynamic_args=dynamic_args)
         ret = qsrlib.request_qsrs(req_msg=req)
 
-        print "\n"
-        for ep in ret.qstag.episodes:
-            print ep
+        #print "\n"
+        #for ep in ret.qstag.episodes:
+        #    print ep
         return ret
 
 
@@ -384,7 +441,7 @@ class activity_server(object):
 
 
         for subj in self.skeleton_map:
-            print ">", len(self.skeleton_map[subj]["left_hand"])
+            #print ">", len(self.skeleton_map[subj]["left_hand"])
             ob_states={}
             world = World_Trace()
             map_frame_data = self.skeleton_map[subj]
@@ -438,7 +495,7 @@ class activity_server(object):
             all_data = len(self.sk_publisher.accumulate_data[subj])
             if all_data<frames*2:
                 continue
-            print all_data
+            #print all_data
             if self.sk_publisher.offline == 1:
                 new_range = range(0,frames*2, 2)
             else:
@@ -448,7 +505,7 @@ class activity_server(object):
             self.skeleton_map[subj]['right_hand'] = []
             self.skeleton_map[subj]['left_hand'] = []
             for f in new_range:
-                print '*',f
+                # print '*',f
                 robot_pose = self.sk_publisher.accumulate_robot[subj][f]
 
                 for j, name in zip([7, 3],["right_hand", "left_hand"]):
@@ -515,7 +572,7 @@ class activity_server(object):
         # self.image_logger.stop_image_callbacks = 0   #stop the image callbacks in the logger
         # self.sk_publisher.robot_pose_flag = 0        #stop the callbacks in the pub
         self.sk_publisher.action_called = 0
-        self.reset_ptu()
+        #self.reset_ptu()
 
 
     def reset_ptu(self):
@@ -603,6 +660,7 @@ def nodes(graph):
     # Get object nodes from graph
     objects, spa, temp = [], [], []
     for node in graph.vs():
+        #print node
         if node['node_type'] == 'object':
             objects.append(node['name'])
         if node['node_type'] == 'spatial_relation':
