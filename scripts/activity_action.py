@@ -54,7 +54,6 @@ class activity_server(object):
         # path = os.path.join(datafilepath, 'point_cloud_object_clusters')
         # self.objects = self.get_point_cloud_objects(path)
 
-
         # SOMA services
         rospy.loginfo("Wait for soma roi service")
         rospy.wait_for_service('/soma/query_rois')
@@ -67,8 +66,6 @@ class activity_server(object):
         self.soma_id_store = MessageStoreProxy(database='message_store', collection='soma_activity_ids_list')
         self.soma_store = MessageStoreProxy(database="somadata", collection="object")
         self.get_soma_objects()
-
-
 
         # Start server
         rospy.loginfo("Activity Recognition starting an action server")
@@ -94,12 +91,22 @@ class activity_server(object):
         # load files
         self.load_all_files(datafilepath)
         # online window of QSTAGS
-        self.windows_size = 150
-        self.th = 4         # column thickness
-        self.th2 = 4        # frame thickness
-        self.th3 = 4        # thickness between images
-        self.th_100 = 500   # how big is the 100%
+        #self.windows_size = 150
+        #self.th = 4         # column thickness
+        #self.th2 = 4        # frame thickness
+        #self.th3 = 4        # thickness between images
+        #self.th_100 = 500   # how big is the 100%
         self.qsr_median_window = 1   # smooth the QSR relations
+
+        self.axes_th = 101
+        self.space_th = 2
+        self.num_topics = len(self.actions_vectors) #stupid name!
+        self.time = 500
+        self.data = {}
+        self.colors = [[0, 0, 255], [0, 170, 255], [0, 255, 170], [0, 255, 0], [170, 255, 0],
+        [255, 170, 0], [255, 0, 0], [255, 0, 170], [170, 0, 255]] # note BGR ...
+        self._create_image()
+
         self.online_window = {}
         self.online_window_img = {}
         self.act_results = {}
@@ -115,6 +122,21 @@ class activity_server(object):
         #                 'KitchenCounter3':'Kitchen', 'ReceptionDesk':'Reception', 'HospActRec1':'Hospitality',
         #                 'HospActRec4':'Hospitality', 'CorpActRec3':'Corporate', 'SuppActRec1': 'Support' }
 
+    def _init_data(self):
+        # create the data structure
+        for i in range(self.num_topics):
+            self.data[i] = np.zeros(self.time)
+
+    def _create_image(self):
+        #creating the image
+        self.img = np.zeros((self.axes_th*self.num_topics + self.space_th*(self.num_topics-1), self.time, 3),dtype=np.uint8)+30
+        for i in range(self.num_topics-1):
+            self.img[self.space_th*i+self.axes_th*(i+1):(self.space_th+self.axes_th)*(i+1), :, :] = 255
+        # add grid on image
+        for i in range(self.num_topics):
+            for j in [20,40,60,80]:
+                self.img[(self.space_th+self.axes_th)*i+j:(self.space_th+self.axes_th)*i+j+1, :3, :] = 255
+                self.img[(self.space_th+self.axes_th)*i+j:(self.space_th+self.axes_th)*i+j+1, self.time-3:, :] = 255
 
     def execute_cb(self, goal):
         self.online_window = {}
@@ -124,17 +146,8 @@ class activity_server(object):
         start = rospy.Time.now()
         end = rospy.Time.now()
 
-        # self.sk_publisher._initialise_data()
-        # self.sk_publisher.robot_pose_flag = 1
-        # self.waypoint = goal.waypoint
-
-        #self.set_ptu_state(goal.waypoint)  # set this by selecting an object in the roi ?
-        
-        # self.get_rotation_matrix()
-        # prev_uuid = ""
         if goal.waypoint == "offline":
             print "running offline..."
-
             self.sk_publisher.offline = 1
             video = "vid50"
             self.sk_publisher.offline_directory = "/home/scpd/Datasets/ECAI_Data/dataset_segmented_15_12_16/"
@@ -149,7 +162,6 @@ class activity_server(object):
                 break
 
             self.convert_to_map()
-
             # THIS SHOULD USE MONGO like the logger does
             # region = self.soma_roi_config[self.waypoint]
             self.get_world_frame_trace()
@@ -157,19 +169,107 @@ class activity_server(object):
             self.update_online_window()
             self.recognise_activities()
             self.plot_online_window()
-            # print '------------'
-            rospy.sleep(0.01)  # wait until something is published
-
             end = rospy.Time.now()
+
         # after the action reset everything
         self.reset_all()
         self._as.set_succeeded(recogniseActionResult())
         print ">> set_succeeded\n"
+   
+    #########################################################################
+    def update_online_window(self):
+        for subj in self.subj_world_trace:
+            # initiate the window of QSTAGS for this person
+            if subj not in self.online_window:
+                self.online_window[subj] = np.zeros((self.time, len(self.code_book)), dtype=np.uint8)
+                self.online_window_img[subj] = self.img #np.zeros((len(self.code_book)*self.th,self.windows_size*self.th2,3),dtype=np.uint8)+255
+            else:  #shifts by one frame
+                self.online_window[subj][1:self.time] = self.online_window[subj][0:self.time-1]
+                #self.online_window_img[subj][:,self.th2:self.windows_size*self.th2,:] = self.online_window_img[subj][:,0:self.windows_size*self.th2-self.th2,:]
+            # find which QSTAGS happened in this frame
+            ret = self.subj_world_trace[subj]
+            self.online_window[subj][0,:] = 0
+            #self.online_window_img[subj][:, 0:self.th2, :] = 255
+            for cnt, h in zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
+                oss, ss, ts  = nodes(ret.qstag.graphlets.graphlets[h])
+                ssl = [d.values() for d in ss]
+                #if "Microwave" in oos:
+                #print ">>>", cnt, h, type(h) #, #oss, ssl #ret.qstag.graphlets.graphlets[h]
+                if isinstance(h, int):
+                    h = "{:20d}".format(h).lstrip()
+                #print cnt, h, type(h), len(h), len(self.code_book), len(self.code_book[0]) #, self.code_book.shape
+                #code_book = [str(i) for i in self.code_book]
+                if h in self.code_book:  # Futures WARNING here
+                    index = list(self.code_book).index(h)
+                    self.online_window[subj][0, index] = 1
+                    #self.online_window_img[subj][index*self.th:index*self.th+self.th, 0:self.th2, :] = 10
 
+    #########################################################################
+    def recognise_activities(self):
+        self.act_results = {}
+        for subj, window in self.online_window.items():
+            # compressing the different windows to be processed
+            for w in range(2,10,2):
+                for i in range(self.windows_size-w):
+                    compressed_window = copy.deepcopy(window[i,:])
+                    for j in range(1,w+1):
+                        compressed_window += window[j+i,:]
 
+                    compressed_window = [1 if o !=0 else 0 for o in compressed_window]
+                    # compressed_window /= compressed_window
+
+                    # comparing the processed windows with the different actions
+                    if subj not in self.act_results:
+                        self.act_results[subj] = {}
+                    for act in self.actions_vectors:
+                        if act not in self.act_results[subj]:
+                            self.act_results[subj][act] = np.zeros((self.windows_size), dtype=np.float32)
+
+                        result = np.sum(compressed_window*self.actions_vectors[act])
+                        if result != 0:
+                            self.act_results[subj][act][i:i+w] += result
+                        # if act==2:
+                        #     self.act_results[subj][act][i:i+w] += 20
+        # calibration
+        for subj in self.act_results:
+            for act in self.act_results[subj]:
+                self.act_results[subj][act] /= 20
+
+    #########################################################################
+    def plot_online_window(self):
+        if len(self.online_window_img) == 0:
+            img = self.img # np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2+59,  3),dtype=np.uint8)+255
+        else:
+            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2*len(self.online_window_img)+59,  3),dtype=np.uint8)+255
+        img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
+        h = len(self.code_book)*self.th+self.th3+self.th_100
+        img[:,50:59,:] = 200
+
+        img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+        for counter,subj in enumerate(self.online_window_img):
+            img1 = self.online_window_img[subj]
+            img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+            for f in range(self.windows_size):
+                to_be_ordered = {}
+                for act in self.act_results[subj]:
+                    to_be_ordered[act] = self.act_results[subj][act][f]
+                sorted_x = sorted(to_be_ordered.items(), key=operator.itemgetter(1))
+                for x in reversed(sorted_x):
+                    img2[int(self.th_100-x[1]*self.th_100/100.0):self.th_100,f*self.th2:(f+1)*self.th2,:] = self.RGB_tuples[x[0]]
+
+            img[0:len(self.code_book)*self.th,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img1
+            img[len(self.code_book)*self.th+self.th3:,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img2
+            img[:,  58+(counter+1)*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = 120
+
+        try:
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(img2, "bgr8"))
+        except CvBridgeError as e:
+            print(e)
+        #cv2.waitKey(1)
+
+    #########################################################################
     def get_soma_objects(self):
         """srv call to mongo and get the list of new objects and locations"""
-
         ids = self.soma_id_store.query(String._type)
         ids = [id_[0].data for id_ in ids]
         print "SOMA IDs used to observe >> ", ids
@@ -213,116 +313,6 @@ class activity_server(object):
             k = roi.type + "_" + roi.id
             self.rois[k] = Polygon([ (p.position.x, p.position.y) for p in roi.posearray.poses])
 
-
-    def plot_online_window(self):
-
-        if len(self.online_window_img) == 0:
-            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2+59,  3),dtype=np.uint8)+255
-        else:
-            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2*len(self.online_window_img)+59,  3),dtype=np.uint8)+255
-        img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
-        h = len(self.code_book)*self.th+self.th3+self.th_100
-
-        #print "1. ", h, self.image_label.shape
-        #print "2. ", img.shape
-        #print "3. ", len(self.code_book)
-        #img[h-356:h,0:59,:] = self.image_label
-
-        img[:,50:59,:] = 200
-
-        img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
-        for counter,subj in enumerate(self.online_window_img):
-            # print 'test',counter,subj
-            img1 = self.online_window_img[subj]
-            #cv2.imshow('test'+str(counter),self.online_window_img[subj])
-            img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
-            for f in range(self.windows_size):
-                to_be_ordered = {}
-                for act in self.act_results[subj]:
-                    to_be_ordered[act] = self.act_results[subj][act][f]
-                sorted_x = sorted(to_be_ordered.items(), key=operator.itemgetter(1))
-                for x in reversed(sorted_x):
-                    img2[int(self.th_100-x[1]*self.th_100/100.0):self.th_100,f*self.th2:(f+1)*self.th2,:] = self.RGB_tuples[x[0]]
-
-            img[0:len(self.code_book)*self.th,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img1
-            img[len(self.code_book)*self.th+self.th3:,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img2
-            img[:,  58+(counter+1)*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = 120
-        try:
-            self.image_pub.publish(self.bridge.cv2_to_imgmsg(img2, "bgr8"))
-            # self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-        except CvBridgeError as e:
-            print(e)
-
-        # cv2.imwrite('/home/omari/test.png',img)
-        #     cv2.imshow('actions',img)
-        cv2.waitKey(1)
-
-
-    def recognise_activities(self):
-        self.act_results = {}
-        for subj, window in self.online_window.items():
-            # compressing the different windows to be processed
-            for w in range(2,10,2):
-                for i in range(self.windows_size-w):
-                    compressed_window = copy.deepcopy(window[i,:])
-                    for j in range(1,w+1):
-                        compressed_window += window[j+i,:]
-
-                    compressed_window = [1 if o !=0 else 0 for o in compressed_window]
-                    # compressed_window /= compressed_window
-
-                    # comparing the processed windows with the different actions
-                    if subj not in self.act_results:
-                        self.act_results[subj] = {}
-                    for act in self.actions_vectors:
-                        if act not in self.act_results[subj]:
-                            self.act_results[subj][act] = np.zeros((self.windows_size), dtype=np.float32)
-
-                        result = np.sum(compressed_window*self.actions_vectors[act])
-                        if result != 0:
-                            self.act_results[subj][act][i:i+w] += result
-                        # if act==2:
-                        #     self.act_results[subj][act][i:i+w] += 20
-        # calibration
-        for subj in self.act_results:
-            for act in self.act_results[subj]:
-                self.act_results[subj][act] /= 20
-
-    def update_online_window(self):
-        for subj in self.subj_world_trace:
-            #print subj
-            # initiate the window of QSTAGS for this person
-            if subj not in self.online_window:
-                self.online_window[subj] = np.zeros((self.windows_size, len(self.code_book)), dtype=np.uint8)
-                self.online_window_img[subj] = np.zeros((len(self.code_book)*self.th,self.windows_size*self.th2,3),dtype=np.uint8)+255
-            # shift one frame
-            else:
-                self.online_window[subj][1:self.windows_size] = self.online_window[subj][0:self.windows_size-1]
-                self.online_window_img[subj][:,self.th2:self.windows_size*self.th2,:] = self.online_window_img[subj][:,0:self.windows_size*self.th2-self.th2,:]
-            # find which QSTAGS happened in this frame
-            ret = self.subj_world_trace[subj]
-            self.online_window[subj][0,:] = 0
-            self.online_window_img[subj][:, 0:self.th2, :] = 255
-            #print self.code_book
-            #print ret.qstag.graphlets.graphlets
-
-            for cnt, h in zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
-                oss, ss, ts  = nodes(ret.qstag.graphlets.graphlets[h])
-                ssl = [d.values() for d in ss]
-                #if "Microwave" in oos:
-                #print ">>>", cnt, h, type(h) #, #oss, ssl #ret.qstag.graphlets.graphlets[h]
-
-                if isinstance(h, int):
-                    h = "{:20d}".format(h).lstrip()
-                #print cnt, h, type(h), len(h), len(self.code_book), len(self.code_book[0]) #, self.code_book.shape
-                #code_book = [str(i) for i in self.code_book]
-                if h in self.code_book:  # Futures WARNING here
-                    index = list(self.code_book).index(h)
-                    #print ">>>HERE"
-                    self.online_window[subj][0, index] = 1
-                    self.online_window_img[subj][index*self.th:index*self.th+self.th, 0:self.th2, :] = 10
-
-
     def load_all_files(self, path):
         print "loading files..."
         # date = time.strftime("%d_%m_%Y")
@@ -346,9 +336,9 @@ class activity_server(object):
         print "date: ", date_files
         path = os.path.join(path, date_files[-1])
 
-        with open(path + "/code_book.p", 'r') as f:
+        with open(path + "/_code_book.p", 'r') as f:
             code_book = pickle.load(f)
-        with open(path + "/graphlets.p", 'r') as f:
+        with open(path + "/_graphlets.p", 'r') as f:
             graphlets = pickle.load(f)
 
         self.code_book = list(code_book) #[ "{:20.0f}".format(hash).lstrip() for hash in list(code_book)]
@@ -364,37 +354,22 @@ class activity_server(object):
             #if "Microwave" in oss:
             print c, oss, ssl
 
-        # with open(path + "/graphlets_MK3.p", 'r') as f:
-        #     self.graphlets = pickle.load(f)
-
         self.actions_vectors = {}
         with open(path + "/topic_word.p", 'r') as f:
             VT = pickle.load(f)
             print "actions:", VT.shape
 
-        N = 0
+        #N = 0
         for count,act in enumerate(VT):
-
             p_sum = sum(x for x in act if x > 0)    # sum of positive graphlets
             self.actions_vectors[count] = act/p_sum*100
             self.actions_vectors[count][self.actions_vectors[count]<0] = 0
-            #print self.actions_vectors[count]
-            #print '----'
-            N+=1
-        HSV_tuples = [(x*1.0/N, 0.7, 0.9) for x in range(N)]
-        self.RGB_tuples = map(lambda x: colorsys.hsv_to_rgb(*x), HSV_tuples)
-        for c,i in enumerate(self.RGB_tuples):
-            self.RGB_tuples[c] = [255*x for x in i]
+            #N+=1
+        #HSV_tuples = [(x*1.0/N, 0.7, 0.9) for x in range(N)]
+        #self.RGB_tuples = map(lambda x: colorsys.hsv_to_rgb(*x), HSV_tuples)
+        #for c,i in enumerate(self.RGB_tuples):
+        #    self.RGB_tuples[c] = [255*x for x in i]
             # print self.RGB_tuples[c]
-
-	#self.RGB_tuples[0] = [255, 0 ,0]
-	#self.RGB_tuples[1] = [0, 255 ,0]
-	#self.RGB_tuples[2] = [0, 0 ,255]
-	#self.RGB_tuples[3] = [255, 255 ,0]
-	#self.RGB_tuples[4] = [0, 255 ,255]
-	#self.RGB_tuples[5] = [255, 0 ,255]
-	#self.RGB_tuples[6] = [20, 20 ,20]
-	#self.RGB_tuples[7] = [200, 200 ,200]
 
     def get_object_frame_qsrs(self, world_trace):
         joint_types = {'left_hand': 'hand', 'right_hand': 'hand',  'head-torso': 'tpcc-plane'}
@@ -483,8 +458,6 @@ class activity_server(object):
                 self.skeleton_map[subj]["left_hand"] = self.skeleton_map[subj]["left_hand"][2:]
                 self.skeleton_map[subj]["right_hand"] = self.skeleton_map[subj]["right_hand"][2:]
 
-
-
     def convert_to_map(self):
         self.skeleton_map = {}
         frames = 20      # frames to be processed
@@ -517,53 +490,6 @@ class activity_server(object):
 
             if self.sk_publisher.offline == 1:
                 self.sk_publisher.accumulate_data[subj] = self.sk_publisher.accumulate_data[subj][2:]
-
-
-                # map_joint = self._convert_one_joint_to_map(right_hand)
-                # map_joint = self._convert_one_joint_to_map(left_hand)
-                # self.skeleton_map[subj]['left_hand'].append(map_joint)
-        # print self.skeleton_map[subj]
-
-    # def _convert_one_joint_to_map(self,joint):
-    #     y = joint.pose.position.x
-    #     z = joint.pose.position.y
-    #     x = joint.pose.position.z
-    #     pos_p = np.matrix([[x], [-y], [z]])     # person's position in camera frame
-    #     map_pos = self.rot*pos_p+self.pos_robot # person's position in map frame
-    #     x_mf = map_pos[0,0]
-    #     y_mf = map_pos[1,0]
-    #     z_mf = map_pos[2,0]
-    #     return [x_mf,y_mf,z_mf]
-
-
-    # def get_rotation_matrix(self):
-    #
-    #     try:
-    #         pan = float(self.sk_publisher.ptu_pan)
-    #         tilt = float(self.sk_publisher.ptu_tilt)
-    #         # pan = self.config[waypoint]['pan']
-    #         # tilt = self.config[waypoint]['tilt']
-    #     except KeyError:
-    #         print 'could not listen to ptu settings'
-    #         pan, tilt = float(0), float(0)
-    #
-    #     xr = self.robot_pose.position.x
-    #     yr = self.robot_pose.position.y
-    #     zr = self.robot_pose.position.z
-    #
-    #     ax = self.robot_pose.orientation.x
-    #     ay = self.robot_pose.orientation.y
-    #     az = self.robot_pose.orientation.z
-    #     aw = self.robot_pose.orientation.w
-    #
-    #     roll, pitch, yaw = euler_from_quaternion([ax, ay, az, aw])    #odom
-    #     yaw   += pan*math.pi / 180.                   # this adds the pan of the ptu state when recording took place.
-    #     pitch += tilt*math.pi / 180.                # this adds the tilt of the ptu state when recording took place.
-    #     rot_y = np.matrix([[np.cos(pitch), 0, np.sin(pitch)], [0, 1, 0], [-np.sin(pitch), 0, np.cos(pitch)]])
-    #     rot_z = np.matrix([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
-    #     self.rot = rot_z*rot_y
-    #     self.pos_robot = np.matrix([[xr], [yr], [zr+1.66]]) # robot's position in map frame
-
 
     def robot_callback(self, msg):
         self.robot_pose = msg
