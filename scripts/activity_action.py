@@ -19,6 +19,7 @@ import math
 import numpy as np
 from qsrlib_io.world_trace import Object_State, World_Trace
 
+#import time
 from qsrlib.qsrlib import QSRlib, QSRlib_Request_Message
 from qsrlib_io.world_qsr_trace import World_QSR_Trace
 from qsrlib_utils.utils import merge_world_qsr_traces
@@ -90,6 +91,7 @@ class activity_server(object):
 
         # load files
         self.load_all_files(datafilepath)
+        print ">>>> code words: ",len(self.code_book)
         # online window of QSTAGS
         #self.windows_size = 150
         #self.th = 4         # column thickness
@@ -103,7 +105,7 @@ class activity_server(object):
         self.num_topics = len(self.actions_vectors) #stupid name!
         self.time = 500
         self.data = {}
-        self.colors = [[0, 0, 255], [0, 170, 255], [0, 255, 170], [0, 255, 0], [170, 255, 0],
+        self.colors = [[0, 0, 255], [0, 170, 255], [0, 255, 0], [170, 255, 0], [0, 255, 170],
         [255, 170, 0], [255, 0, 0], [255, 0, 170], [170, 0, 255]] # note BGR ...
         self._create_image()
 
@@ -112,7 +114,7 @@ class activity_server(object):
         self.act_results = {}
 
         self.image_pub = rospy.Publisher("/activity_recognition_results", Image, queue_size=10)
-        self.image_label = cv2.imread(datafilepath2+'/image_label.png')
+        #self.image_label = cv2.imread(datafilepath2+'/image_label.png')
         self.bridge = CvBridge()
         self._as.start()
 
@@ -121,11 +123,6 @@ class activity_server(object):
         #                 'KitchenCounter1':'Kitchen', 'KitchenDemo':'Kitchen','KitchenCounter2':'Kitchen',
         #                 'KitchenCounter3':'Kitchen', 'ReceptionDesk':'Reception', 'HospActRec1':'Hospitality',
         #                 'HospActRec4':'Hospitality', 'CorpActRec3':'Corporate', 'SuppActRec1': 'Support' }
-
-    def _init_data(self):
-        # create the data structure
-        for i in range(self.num_topics):
-            self.data[i] = np.zeros(self.time)
 
     def _create_image(self):
         #creating the image
@@ -156,21 +153,27 @@ class activity_server(object):
             print "skeleton pub called"
             self.sk_publisher.action_called = 1
 
-        while (end - start).secs < duration.secs:
+        r = rospy.Rate(30)
+        while not rospy.is_shutdown():
+        #while (end - start).secs < duration.secs:
             if self._as.is_preempt_requested():
                 print ">> preempt_requested\n"
                 break
-
+            if (end-start).secs > duration.secs:
+                print ">> time out!"
+                break
+            cycle_time = time.time() #rospy.Time.now()
             self.convert_to_map()
             # THIS SHOULD USE MONGO like the logger does
             # region = self.soma_roi_config[self.waypoint]
             self.get_world_frame_trace()
-
             self.update_online_window()
             self.recognise_activities()
             self.plot_online_window()
             end = rospy.Time.now()
-
+            #print end-cycle_time
+            r.sleep()
+            print time.time()-cycle_time
         # after the action reset everything
         self.reset_all()
         self._as.set_succeeded(recogniseActionResult())
@@ -184,11 +187,11 @@ class activity_server(object):
                 self.online_window[subj] = np.zeros((self.time, len(self.code_book)), dtype=np.uint8)
                 self.online_window_img[subj] = self.img #np.zeros((len(self.code_book)*self.th,self.windows_size*self.th2,3),dtype=np.uint8)+255
             else:  #shifts by one frame
-                self.online_window[subj][1:self.time] = self.online_window[subj][0:self.time-1]
+                self.online_window[subj][:self.time-1] = self.online_window[subj][1:]
                 #self.online_window_img[subj][:,self.th2:self.windows_size*self.th2,:] = self.online_window_img[subj][:,0:self.windows_size*self.th2-self.th2,:]
             # find which QSTAGS happened in this frame
             ret = self.subj_world_trace[subj]
-            self.online_window[subj][0,:] = 0
+            self.online_window[subj][-1,:] = 0
             #self.online_window_img[subj][:, 0:self.th2, :] = 255
             for cnt, h in zip(ret.qstag.graphlets.histogram, ret.qstag.graphlets.code_book):
                 oss, ss, ts  = nodes(ret.qstag.graphlets.graphlets[h])
@@ -201,7 +204,9 @@ class activity_server(object):
                 #code_book = [str(i) for i in self.code_book]
                 if h in self.code_book:  # Futures WARNING here
                     index = list(self.code_book).index(h)
-                    self.online_window[subj][0, index] = 1
+                    self.online_window[subj][-1, index] = 1
+                    #print 'yay'
+                
                     #self.online_window_img[subj][index*self.th:index*self.th+self.th, 0:self.th2, :] = 10
 
     #########################################################################
@@ -210,7 +215,7 @@ class activity_server(object):
         for subj, window in self.online_window.items():
             # compressing the different windows to be processed
             for w in range(2,10,2):
-                for i in range(self.windows_size-w):
+                for i in range(self.time-w):
                     compressed_window = copy.deepcopy(window[i,:])
                     for j in range(1,w+1):
                         compressed_window += window[j+i,:]
@@ -223,7 +228,7 @@ class activity_server(object):
                         self.act_results[subj] = {}
                     for act in self.actions_vectors:
                         if act not in self.act_results[subj]:
-                            self.act_results[subj][act] = np.zeros((self.windows_size), dtype=np.float32)
+                            self.act_results[subj][act] = np.zeros((self.time), dtype=np.float32)
 
                         result = np.sum(compressed_window*self.actions_vectors[act])
                         if result != 0:
@@ -237,35 +242,34 @@ class activity_server(object):
 
     #########################################################################
     def plot_online_window(self):
-        if len(self.online_window_img) == 0:
-            img = self.img # np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2+59,  3),dtype=np.uint8)+255
-        else:
-            img = np.zeros((len(self.code_book)*self.th+self.th3+self.th_100,  self.windows_size*self.th2*len(self.online_window_img)+59,  3),dtype=np.uint8)+255
-        img[len(self.code_book)*self.th:len(self.code_book)*self.th+self.th3,:,:] = 120
-        h = len(self.code_book)*self.th+self.th3+self.th_100
-        img[:,50:59,:] = 200
-
-        img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
+        #if len(self.online_window_img) == 0:
+        final_img = self.img # 
+        
         for counter,subj in enumerate(self.online_window_img):
-            img1 = self.online_window_img[subj]
-            img2 = np.zeros((self.th_100,self.windows_size*self.th2,3),dtype=np.uint8)+255
-            for f in range(self.windows_size):
-                to_be_ordered = {}
-                for act in self.act_results[subj]:
-                    to_be_ordered[act] = self.act_results[subj][act][f]
-                sorted_x = sorted(to_be_ordered.items(), key=operator.itemgetter(1))
-                for x in reversed(sorted_x):
-                    img2[int(self.th_100-x[1]*self.th_100/100.0):self.th_100,f*self.th2:(f+1)*self.th2,:] = self.RGB_tuples[x[0]]
+            img1 = self._update_image(self.act_results[subj])
+            if counter==0:
+                final_img = img1
+            else:
+                final_img = np.concatenate((final_img, img1), axis=1)            
+            
+        #try:
+        #print ""
+        self.image_pub.publish(self.bridge.cv2_to_imgmsg(final_img, "bgr8"))
+        
+        #except CvBridgeError as e:
+        #    print(e)
 
-            img[0:len(self.code_book)*self.th,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img1
-            img[len(self.code_book)*self.th+self.th3:,  59+counter*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = img2
-            img[:,  58+(counter+1)*self.windows_size*self.th2:59+(counter+1)*self.windows_size*self.th2,  :] = 120
-
-        try:
-            self.image_pub.publish(self.bridge.cv2_to_imgmsg(img2, "bgr8"))
-        except CvBridgeError as e:
-            print(e)
-        #cv2.waitKey(1)
+    #########################################################################
+    def _update_image(self,data):
+        img = self.img.copy()
+        #print data
+        for i in range(self.num_topics):
+            for t,k in enumerate(data[i][self.time/2:]):
+                a = (i+1)*(self.space_th+self.axes_th)
+                #print a,k,t,i
+                #print np.mod(i,len(self.colors))
+                img[a-int(k):a, 2*t:2*t+2, :] = self.colors[np.mod(i,len(self.colors))]
+        return img
 
     #########################################################################
     def get_soma_objects(self):
@@ -460,19 +464,19 @@ class activity_server(object):
 
     def convert_to_map(self):
         self.skeleton_map = {}
-        frames = 20      # frames to be processed
+        frames = 10      # frames to be processed
         self.frames = frames
 
         for subj in self.sk_publisher.accumulate_data.keys():
-
+            print ">>>>",subj
             all_data = len(self.sk_publisher.accumulate_data[subj])
-            if all_data<frames*2:
+            if all_data<frames:
                 continue
             #print all_data
             if self.sk_publisher.offline == 1:
-                new_range = range(0,frames*2, 2)
+                new_range = range(0,frames*1, 1)
             else:
-                new_range = range(np.max([0, all_data-frames*2]), all_data,2)
+                new_range = range(np.max([0, all_data-frames*1]), all_data,1)
 
             self.skeleton_map[subj] = {}
             self.skeleton_map[subj]['right_hand'] = []
@@ -487,7 +491,7 @@ class activity_server(object):
                     map_joint = [map_point.x, map_point.y, map_point.z]
                     self.skeleton_map[subj][name].append(map_joint)
                     # import pdb; pdb.set_trace()
-
+            print "^^^^^",self.skeleton_map[subj]["right_hand"]
             if self.sk_publisher.offline == 1:
                 self.sk_publisher.accumulate_data[subj] = self.sk_publisher.accumulate_data[subj][2:]
 
