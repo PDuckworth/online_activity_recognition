@@ -41,8 +41,8 @@ class SkeletonManager(object):
         self.robot_pose = Pose()   # pose of the robot
         self.ptu_pan = self.ptu_tilt = 0.0
 
-        self.reduce_frame_rate_by = rospy.get_param("~frame_rate_reduce", 6) # roughly: 3-4Hz
-        self.max_num_frames = rospy.get_param("~max_frames", 500)  # roughly 2mins
+        self.reduce_frame_rate_by = rospy.get_param("~frame_rate_reduce", 1) # roughly: 3-4Hz this used to be 6, I changed it (Mo)
+        self.max_num_frames = rospy.get_param("~max_frames", 5000)  # roughly 2mins
         self.soma_roi_store = MessageStoreProxy(database='somadata', collection='roi')
 
         # directory to store the data
@@ -61,7 +61,7 @@ class SkeletonManager(object):
         self.cx = 319.5
         self.cy = 239.5
         # depth threshold on recordings
-        self.dist_thresh = rospy.get_param("~dist_thresh", 1.5)
+        self.dist_thresh = rospy.get_param("~dist_thresh", 0.5) ## it used to be 1.5, I changed it (Mo)
 
         # open cv stuff
         self.cv_bridge = CvBridge()
@@ -80,7 +80,8 @@ class SkeletonManager(object):
             print "restricted to soma ROI: %s. %s" % (self.restrict_to_rois, self.roi_config)
 
         # listeners
-        rospy.Subscriber("skeleton_data/incremental", skeleton_message, self.incremental_callback)
+        #rospy.Subscriber("skeleton_data/incremental", skeleton_message, self.incremental_callback)
+        rospy.Subscriber("/skeleton_data/cnn", skeleton_message, self.incremental_callback)
         # rospy.Subscriber('/'+self.camera+'/rgb/image_color', sensor_msgs.msg.Image, callback=self.rgb_callback, queue_size=10)
         # rospy.Subscriber('/'+self.camera+'/rgb/sk_tracks', sensor_msgs.msg.Image, callback=self.rgb_sk_callback, queue_size=10)
         # rospy.Subscriber('/'+self.camera+'/depth/image' , sensor_msgs.msg.Image, self.depth_callback, queue_size=10)
@@ -156,8 +157,8 @@ class SkeletonManager(object):
         if self.action_called:
             if self._flag_robot:# and self._flag_rgb and self._flag_depth:
                 if msg.uuid in self.sk_mapping:
-                    if self.sk_mapping[msg.uuid]["state"] is 'Tracking' and len(self.accumulate_data[msg.uuid]) < self.max_num_frames \
-                    and msg.joints[0].pose.position.z > self.dist_thresh:
+                    if self.sk_mapping[msg.uuid]["state"] is 'Tracking' and len(self.accumulate_data[msg.uuid]) < self.max_num_frames:# \
+                    #and msg.joints[0].pose.position.z > self.dist_thresh:
 
                         self.sk_mapping[msg.uuid]["msgs_recieved"]+=1
                         if self.sk_mapping[msg.uuid]["msgs_recieved"] % self.reduce_frame_rate_by == 0:

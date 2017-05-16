@@ -105,8 +105,8 @@ class activity_server(object):
         self.num_topics = len(self.actions_vectors) #stupid name!
         self.time = 500
         self.data = {}
-        self.colors = [[0, 0, 255], [0, 170, 255], [0, 255, 0], [170, 255, 0], [0, 255, 170],
-        [255, 170, 0], [255, 0, 0], [255, 0, 170], [170, 0, 255]] # note BGR ...
+        self.colors = [[0, 0, 255], [0, 255, 0], [255, 0, 0], [170, 255, 0], [0, 255, 170],
+        [255, 170, 0], [0, 170, 255], [255, 0, 170], [170, 0, 255]] # note BGR ...
         self._create_image()
 
         self.online_window = {}
@@ -173,7 +173,7 @@ class activity_server(object):
             end = rospy.Time.now()
             #print end-cycle_time
             r.sleep()
-            print time.time()-cycle_time
+            #print time.time()-cycle_time
         # after the action reset everything
         self.reset_all()
         self._as.set_succeeded(recogniseActionResult())
@@ -264,11 +264,11 @@ class activity_server(object):
         img = self.img.copy()
         #print data
         for i in range(self.num_topics):
-            for t,k in enumerate(data[i][self.time/2:]):
+            for t,k in enumerate(data[i][self.time*3/4:]):
                 a = (i+1)*(self.space_th+self.axes_th)
                 #print a,k,t,i
                 #print np.mod(i,len(self.colors))
-                img[a-int(k):a, 2*t:2*t+2, :] = self.colors[np.mod(i,len(self.colors))]
+                img[a-int(k):a, 4*t:4*t+4, :] = self.colors[np.mod(i,len(self.colors))]
         return img
 
     #########################################################################
@@ -396,7 +396,7 @@ class activity_server(object):
         # dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.05, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         # dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 2}}
 
-        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Near': 0.5, 'Away': 1.5, 'Ignore': 10}}
+        dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Near': 0.3, 'Away': 1.0, 'Ignore': 10}}
         #dynamic_args['argd'] = {"qsrs_for": qsrs_for, "qsr_relations_and_values": {'Touch': 1.5, 'Ignore': 10}}
         dynamic_args['qtcbs'] = {"qsrs_for": qsrs_for, "quantisation_factor": 0.01, "validate": False, "no_collapse": True} # Quant factor is effected by filters to frame rate
         dynamic_args["qstag"] = {"object_types": joint_types_plus_objects, "params": {"min_rows": 1, "max_rows": 1, "max_eps": 3}}
@@ -466,10 +466,10 @@ class activity_server(object):
         self.skeleton_map = {}
         frames = 10      # frames to be processed
         self.frames = frames
-
+        #print "I am here"
         for subj in self.sk_publisher.accumulate_data.keys():
-            print ">>>>",subj
             all_data = len(self.sk_publisher.accumulate_data[subj])
+            #print ">>>>",subj,all_data            
             if all_data<frames:
                 continue
             #print all_data
@@ -491,7 +491,7 @@ class activity_server(object):
                     map_joint = [map_point.x, map_point.y, map_point.z]
                     self.skeleton_map[subj][name].append(map_joint)
                     # import pdb; pdb.set_trace()
-            print "^^^^^",self.skeleton_map[subj]["right_hand"]
+            #print "^^^^^",self.skeleton_map[subj]["right_hand"]
             if self.sk_publisher.offline == 1:
                 self.sk_publisher.accumulate_data[subj] = self.sk_publisher.accumulate_data[subj][2:]
 
